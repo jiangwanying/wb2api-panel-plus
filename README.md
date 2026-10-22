@@ -1,9 +1,12 @@
-<h1 align="center">wb2api-panel-plus</h1>
-
-把 WorkBuddy / CodeBuddy 账号池封装成 **OpenAI / Anthropic / Codex** 三协议 API，附 Web 管理面板与成长任务自动化。
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
+</p>
+
+<h1 align="center">wb2api-panel-plus</h1>
+
+<p align="center">
+  <b>把 WorkBuddy / CodeBuddy 账号池封装成 OpenAI / Anthropic / Codex 三协议 API</b><br>
+  附 Web 管理面板与成长任务自动化
 </p>
 
 <p align="center">
@@ -24,7 +27,7 @@
 
 ## 来源与致谢
 
-本仓基于以下开源项目二次开发，感谢原作者与社区的无私分享：
+本仓基于以下开源项目二次整合，感谢原作者与社区的无私分享：
 
 - [misakano7545/workbuddy2api-panel](https://github.com/misakano7545/workbuddy2api-panel)：三协议入站、反检测头族、零输出守卫、账号备份迁移等
 - [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)：上游最终版（`73a7560`）
@@ -37,12 +40,12 @@
 - **#223 出站代理**：`HTTPS_PROXY / HTTP_PROXY / NO_PROXY` 环境变量生效（仅上游请求，不改其他流量）
 - **#232 裸模型名跨域回退**：`pool.cross_domain_fallback`（默认关闭；显式 `cn:`/`global:` 前缀永不回退）
 
-> 本仓仅做功能回移与少量适配，**不代表也不隶属于任何上游项目**。
+> 本仓仅做整合与少量功能回移，**不代表也不隶属于任何上游项目**。
 
 ---
 
 > [!IMPORTANT]
-> **维护定位**：本仓是**个人自用**版本，按需维护，**不承诺**更新频率、响应时间或问题修复（无 SLA）。上游接口随时可能变化，部分功能可能随时失效。
+> **维护定位**：本仓是**个人自用的整合版本**，按需维护，**不承诺**更新频率、响应时间或问题修复（无 SLA）。上游接口随时可能变化，部分功能可能随时失效。
 >
 > **与官方无关**：本项目与腾讯、WorkBuddy、CodeBuddy 均无隶属、合作或授权关系。
 
