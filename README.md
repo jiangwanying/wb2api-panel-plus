@@ -1,5 +1,9 @@
 # WorkBuddy2API 整合版
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
+</p>
+
 自用的多账号网关：把 WorkBuddy / CodeBuddy 账号池封装成 **OpenAI / Anthropic / Codex** 三协议 API，附 Web 管理面板与成长任务自动化。
 
 <p align="center">
@@ -18,7 +22,22 @@
 - **扩展接口**：`/v1/search` 联网检索、`/v1/search/messages`（Anthropic 搜索壳）、`/v1/images/*`
 - **出站代理**：支持 `HTTPS_PROXY / HTTP_PROXY / NO_PROXY`；裸模型名可开启跨域回退（`pool.cross_domain_fallback`）
 
-> **致谢与许可**：本项目为个人整合版本，设计思路与部分实现源自开源社区的历史项目；原始版权与 MIT 许可声明见 [LICENSE](LICENSE)。本项目不代表、不隶属于任何上游项目或腾讯 / WorkBuddy / CodeBuddy。
+## 来源与致谢
+
+本仓基于以下开源项目二次整合，感谢原作者与社区的无私分享：
+
+- [misakano7545/workbuddy2api-panel](https://github.com/misakano7545/workbuddy2api-panel)：三协议入站、反检测头族、零输出守卫、账号备份迁移等
+- [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)：上游最终版（`73a7560`）
+- 最初的设计与实现来自 Sliverkiss/workbuddy2api 及其后续维护者
+
+并回移了上游最终版的 4 个 PR：
+
+- **#143 手机端适配**：独立 `mobile.css`（≤760px 抽屉侧栏 / 宽表卡片化）
+- **#213 `/v1/search/messages`**：Anthropic Messages 兼容的联网搜索端点（DSH 搜索 provider 零改动接入）
+- **#223 出站代理**：`HTTPS_PROXY / HTTP_PROXY / NO_PROXY` 环境变量生效（仅上游请求，不改其他流量）
+- **#232 裸模型名跨域回退**：`pool.cross_domain_fallback`（默认关闭；显式 `cn:`/`global:` 前缀永不回退）
+
+> 本仓仅做整合与少量功能回移，**不代表也不隶属于任何上游项目**。
 
 ---
 
@@ -251,13 +270,13 @@ mkdir -p auths data && cp config.example.json config.json
 docker run -d --name workbuddy2api \
   -p 7863:7863 -e TZ=Asia/Shanghai \
   -v ./auths:/app/auths -v ./data:/app/data -v ./config.json:/app/config.json \
-  ghcr.io/misakano7545/workbuddy2api-panel:latest
+  ghcr.io/jiangwanying/wb2api-panel-plus:latest
 
 # 3. 健康检查（无可用账号时返回 503）
 curl -s http://localhost:7863/healthz
 ```
 
-> **首次发布后须将包设为公开**：GitHub 仓库页 → Packages → `workbuddy2api-panel` →
+> **首次发布后须将包设为公开**：GitHub 仓库页 → Packages → `wb2api-panel-plus` →
 > Package settings → Change visibility → Public，否则拉取需要 `docker login ghcr.io`。
 >
 > 镜像 tag：`main` 推 `latest` / `main` / `sha-xxxxxx`。日期版 `v2026.9.26.711` 不是语义化版本，不会额外打 `1.2.3` 这种 tag。PR 只构建、不推送。
@@ -266,8 +285,8 @@ curl -s http://localhost:7863/healthz
 
 ```bash
 # 1. 克隆
-git clone https://github.com/misakano7545/workbuddy2api-panel.git
-cd workbuddy2api-panel
+git clone https://github.com/jiangwanying/wb2api-panel-plus.git
+cd wb2api-panel-plus
 
 # 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
 cp config.example.json config.json
@@ -704,8 +723,8 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 
 | 账号 | Bonus Pack（30 分/天）`created_at` |
 |---|---|
-| `misakano7545` | 09-30、10-03、10-04、10-05、10-06、10-07、10-08、**10-09** |
-| `misakano2975@gmail.com` | 10-03、10-04、10-05、10-06、10-07、10-08、**10-09** |
+| 账号 A | 09-30、10-03、10-04、10-05、10-06、10-07、10-08、**10-09** |
+| 账号 B | 10-03、10-04、10-05、10-06、10-07、10-08、**10-09** |
 
 - **隔夜批处理结算**：行为发生在 D 日 → D+1 凌晨（约 02:00–04:30）批量发包，别期望上报当场到账。
 - 判到账**只认包/余额**，不看连登回读：`report OK but streak.days=0` 是「视图与发放脱节」，不是没赚到（10-02 两号都打该告警，次晨照发）。
