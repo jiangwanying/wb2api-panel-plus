@@ -3149,14 +3149,17 @@ function renderExpirySnapshot(d) {
     const daily = Math.ceil(first.remain / Math.max(1, days));
     const week = bs.filter(b => expDayDiff(b.date) <= 7).reduce((s, b) => s + b.remain, 0);
     const color = days <= 3 ? 'var(--bad)' : days <= 7 ? 'var(--warn)' : 'var(--ok)';
-    const more = bs.length > 4 ? '　等 ' + bs.length + ' 批' : '';
-    const rest = bs.slice(1, 4).map(b =>
-      '随后 ' + esc(b.date.slice(5)) + ' · ' + fmtTok(b.remain)).join('　') + more;
-    const sub = (rest ? '<div class="note">' + rest + '</div>' : '') +
-      (week > first.remain ? '<div class="note">7 天内合计 ' + fmtTok(week) + '</div>' : '');
+    // 只展示「最早一批 + 批次概况」：把十几个批次的日期串铺在单元格里会把行高撑到
+    // 四五倍，且「随后 …」逐条重复更难读。完整逐包明细放「积分构成」页，这里用
+    // title 提供悬停查看。
+    const total = bs.reduce((s, b) => s + b.remain, 0);
+    const detail = bs.map(b => b.date.slice(5) + ' ' + fmtTok(b.remain)).join('；');
+    const parts = ['共 ' + bs.length + ' 批', '合计 ' + fmtTok(total)];
+    if (week > first.remain) parts.push('7 天内 ' + fmtTok(week));
+    const sub = bs.length > 1 ? '<div class="note">' + parts.join(' · ') + '</div>' : '';
     return '<tr' + (hidden ? ' data-exp-row="rest" hidden' : '') + '>' +
       '<td>' + esc(a.nickname || String(a.uid || '').slice(0, 8)) + '</td>' +
-      '<td>' + esc(first.date) + sub + '</td>' +
+      '<td title="' + esc(detail) + '">' + esc(first.date) + sub + '</td>' +
       '<td class="num" style="color:' + color + '">' +
         (days === 0 ? '今天' : days === 1 ? '明天' : days + ' 天') + '</td>' +
       '<td class="num">' + fmtTok(first.remain) + '</td>' +
