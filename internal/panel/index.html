@@ -632,6 +632,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     color: var(--ink-2); font-size: 12.5px; }
   .rm-row input { flex: 1; }
 
+  /* 到期提醒卡片（首页）：每账号一行，色点=危险度，正文数字用 mono 对齐。 */
+  .exp-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
+    font-size: 12.5px; }
+  .exp-row + .exp-row { border-top: 1px solid var(--line-soft); }
+  .exp-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex: none; }
+  .exp-nm { font-weight: 600; flex: none; min-width: 9em; }
+  .exp-main { color: var(--ink-2, inherit); }
+  .exp-main b { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .exp-main .note { margin-top: 2px; font-size: 11px; color: var(--ink-3); }
+  .exp-main.err { color: var(--bad); }
+
 </style>
 <!-- 移动端适配：独立文件，必须在主 <style> 之后（@media 覆盖依赖层叠顺序） -->
 <link rel="stylesheet" href="mobile.css">
@@ -708,24 +719,16 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
       </div>
 
-      <!-- 到期提醒：数据取 /overview 的 credits_expiry_buckets（签到与余额后台刷新
-           按自然日聚合后写入 state.json），打开页面零上游请求。同日多个包合并为一行，
-           单元格只给「最早到期 + 批次概况」，完整逐包明细在「积分构成」页。 -->
-      <div class="box">
+      <!-- 到期提醒（旧版卡片布局）：数据取 /overview 的 credits_expiry_buckets
+           （签到与余额后台刷新按自然日聚合后写入 state.json），打开页面零上游请求。
+           每账号一行卡片：最早到期 + 该批积分 + 日均需耗，后续批次用小字列出。 -->
+      <div class="box" id="expBox">
         <header>
-          <h3>积分到期提醒 <span class="hint">按自然日聚合 · 日均需耗 = 该日到期积分 ÷ 距到期天数 · 上游按失效时刻先后自动优先扣减（FEFO）</span></h3>
+          <h3>积分到期提醒<span class="hint">按最近到期批次估算 · 日均需耗 = 批次剩余 ÷ 距到期天数 · 上游按失效时刻先后自动优先扣减（FEFO）</span></h3>
           <span class="grow"></span>
           <span class="note" id="expNote"></span>
         </header>
-        <div class="tbl-wrap">
-        <table class="acc">
-          <thead><tr>
-            <th>账号</th><th>最早到期</th><th class="num">距到期</th>
-            <th class="num">该日到期</th><th class="num">日均需耗</th>
-          </tr></thead>
-          <tbody id="expBody"></tbody>
-        </table>
-        </div>
+        <div class="pad" id="expPad"><div id="expList"></div></div>
       </div>
 
       <div class="box">
@@ -738,6 +741,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <button class="xs" id="btnTravelAll">旅行巡检</button>
           <button class="xs" id="btnActivityAll">活跃上报</button>
           <button class="xs" id="btnKeepaliveAll">全部保活</button>
+          <button class="xs" id="btnAccExport">导出</button>
         </header>
         <div class="tbl-wrap">
         <table class="acc">
