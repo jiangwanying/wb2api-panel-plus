@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
 </p>
 
-<h1 align="center">Wb2apiPanel-plus</h1>
+<h1 align="center">Wb2apiPanel-Plus</h1>
 
 <p align="center">
   <b>把 WorkBuddy / CodeBuddy 账号池封装成 OpenAI / Anthropic / Codex 三协议 API</b><br>
