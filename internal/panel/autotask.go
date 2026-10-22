@@ -66,6 +66,10 @@ type autoTaskOutcome struct {
 	ClaimError     string
 	Attempt        bool
 	ActionRun      bool
+	// Silent 置位时 executeAutoTask 的 defer 不打日志：用于「执行前已知无需动作」
+	// 的静态跳过（此前已完成 / 未解锁 / 账号没有此任务）。这些状态每轮不变，
+	// 逐行打印只会把运行日志刷满重复行；队列与结果弹窗仍有跳过计数与明细。
+	Silent bool `json:"-"`
 }
 
 // autoActions 已实现的任务动作表（顺序即执行顺序：先解锁依赖项）。
@@ -789,6 +793,9 @@ func (p *Panel) executeAutoTask(a *auth.Auth, act *autoAction) (out autoTaskOutc
 		//   panel: task [小程序选专家对话] 水瓶(df6b07f7) 完成 · 领奖成功 · 进度 1/1
 		//   panel: task [小程序五次对话] 水瓶(df6b07f7) 领奖失败 · 进度 5/5（此前 0/5）· task not completed
 		// 未知任务 code 回退机器码；status 未知值原样透出，不丢信息。
+		if out.Silent {
+			return
+		}
 		name := taskCode
 		if zh := taskCodeZH[taskCode]; zh != "" {
 			name = zh
@@ -847,17 +854,23 @@ func (p *Panel) executeAutoTask(a *auth.Auth, act *autoAction) (out autoTaskOutc
 	if before == nil {
 		out.Status = "skipped"
 		out.Message = "该账号没有此任务"
+		out.Silent = true
 		return out
 	}
 	out.ProgressBefore = taskProgressText(before)
 	if before.Locked {
 		out.Status = "skipped"
 		out.Message = "任务尚未解锁"
+		out.Silent = true
 		return out
 	}
 	if before.Claimed {
+		// 此前已完成：状态仍是 done（对调用方/测试语义不变），但 Silent 静默——
+		// 不再往运行日志里灌每轮不变的重复行；结果弹窗仍显示
+		// 「完成 · 该任务已领取过奖励」。
 		out.Status = "done"
 		out.Claimed = true
+		out.Silent = true
 		out.Message = "该任务已领取过奖励"
 		out.ProgressAfter = taskProgressText(before)
 		return out
