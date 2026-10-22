@@ -1,10 +1,8 @@
-# WorkBuddy2API 整合版
+<h1 align="center">WorkBuddy2API 整合版</h1>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
 </p>
-
-自用的多账号网关：把 WorkBuddy / CodeBuddy 账号池封装成 **OpenAI / Anthropic / Codex** 三协议 API，附 Web 管理面板与成长任务自动化。
 
 <p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.22.5-00ADD8?logo=go&logoColor=white&style=flat-square">
