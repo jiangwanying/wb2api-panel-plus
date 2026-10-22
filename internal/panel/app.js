@@ -10,7 +10,7 @@ let overviewData = null, cfgLoaded = null;
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
-let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+let mdFilter = { q: '', realm: '', cap: '', busy: '', effort: '', promo: '', sort: 'default' };
 /* 收纳行（「其余 N 个账号，展开」）的展开状态。必须存在 DOM 之外：账号池/任务中心视图
    每 5s 轮询重建 tbody，只把状态放在 aria-expanded / hidden 里会被下一轮渲染收回
    （表现为点「展开」后什么都不点又自动收起）。键 = tbody id。 */
@@ -782,6 +782,12 @@ function mdMatch(m, f) {
   if (f.cap === 'vision' && !m.supports_images) return false;
   if (f.cap === 'reasoning' && !m.supports_reasoning) return false;
   if (f.cap === 'default' && !m.is_default) return false;
+  if (f.busy === 'ok') {
+    // 「正常」= 没有需要避让的异常标记（含 idle/normal/暂无数据）
+    if (BUSY_WORDS[m.busy]) return false;
+  } else if (f.busy && m.busy !== f.busy) {
+    return false;
+  }
   if (f.effort === 'off') {
     if (!m.can_disable_thinking) return false;
   } else if (f.effort && !(m.supported_efforts || []).includes(f.effort)) {
@@ -886,13 +892,16 @@ function mdRowHtml(m, pr) {
   if (m.supports_tool_call) caps.push('<span class="tag warn">工具</span>');
   if (m.supports_images) caps.push('<span class="tag warn">视觉</span>');
   if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
-  if (BUSY_WORDS[m.busy]) {
-    const bad = m.busy === 'congested' || m.busy === 'unavailable';
-    caps.push('<span class="tag ' + (bad ? 'bad' : 'warn') + '" title="上游繁忙度 ' + esc(m.busy) + '（/v2/chat/busy 实时；服务端偶发无数据，同一批重查可能变）">' + BUSY_WORDS[m.busy] + '</span>');
-  }
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
+  // 拥堵状态独立成列（不再混在倍率/能力徽标里）：异常三档显示徽标，idle/normal
+  // 显示「正常」，暂无数据显示 —；筛选见 mdBusy。
+  const state = BUSY_WORDS[m.busy]
+    ? '<span class="tag ' + ((m.busy === 'congested' || m.busy === 'unavailable') ? 'bad' : 'warn') + '" title="上游繁忙度 ' + esc(m.busy) + '（/v2/chat/busy 实时；服务端偶发无数据，同一批重查可能变）">' + BUSY_WORDS[m.busy] + '</span>'
+    : m.busy ? '<span style="color:var(--ink-3)">正常</span>'
+    : '<span style="color:var(--ink-3)">—</span>';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
   return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
+    '<td>' + state + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
     '<td>' + (m.default_effort && !m.image_generation ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
@@ -904,7 +913,7 @@ function renderModels() {
   const tb = $('mdBody');
   const list = mdSortList(mdAll.filter(m => mdMatch(m)));
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
   } else {
     tb.innerHTML = list.map(m => mdRowHtml(m, mdProbeOf(m.id))).join('');
   }
@@ -916,9 +925,9 @@ function renderModels() {
 }
 
 function resetModelFilter() {
-  mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+  mdFilter = { q: '', realm: '', cap: '', busy: '', effort: '', promo: '', sort: 'default' };
   $('mdQ').value = ''; $('mdRealm').value = ''; $('mdCap').value = '';
-  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdSort').value = 'default';
+  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdSort').value = 'default'; $('mdBusy').value = '';
   renderModels();
 }
 
@@ -928,7 +937,7 @@ $('mdQ').oninput = () => {
   clearTimeout(mdQTimer);
   mdQTimer = setTimeout(() => { mdFilter.q = $('mdQ').value.trim(); renderModels(); }, 120);
 };
-for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdEffort', 'effort'], ['mdPromo', 'promo'], ['mdSort', 'sort']]) {
+for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdBusy', 'busy'], ['mdEffort', 'effort'], ['mdPromo', 'promo'], ['mdSort', 'sort']]) {
   const el = $(id);
   if (!el) continue;
   el.onchange = () => { mdFilter[key] = el.value; renderModels(); };
