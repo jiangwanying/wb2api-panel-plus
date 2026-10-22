@@ -37,6 +37,7 @@ func TestAccountsExport(t *testing.T) {
 			UID          string `json:"uid"`
 			Nickname     string `json:"nickname"`
 			RefreshToken string `json:"refresh_token"`
+			ExpiresAt    int64  `json:"expires_at"`
 			Realm        string `json:"realm"`
 		} `json:"accounts"`
 	}
@@ -49,6 +50,9 @@ func TestAccountsExport(t *testing.T) {
 	a := out.Accounts[0]
 	if a.UID != "u1" || a.Nickname != "小明" || a.RefreshToken != "rt-1" {
 		t.Fatalf("字段不符: %+v", a)
+	}
+	if a.ExpiresAt != 1700000000*1000 {
+		t.Fatalf("expires_at 应为毫秒口径（import 会 /1000），得到 %d", a.ExpiresAt)
 	}
 	if a.Realm != "cn" {
 		t.Fatalf("CN 域名应回落 realm=cn，得到 %q", a.Realm)
