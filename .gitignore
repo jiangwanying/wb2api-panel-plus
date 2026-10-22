@@ -36,6 +36,8 @@ docs/
 *.md
 !README.md
 !AGENTS.md
+# go:embed 资源（*.md 规则会误伤，必须显式放行）
+!internal/prompt/defaultprompt.md
 
 # Windows binaries
 /wb2api.exe
