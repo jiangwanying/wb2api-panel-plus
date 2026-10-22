@@ -783,15 +783,50 @@ func (p *Panel) executeAutoTask(a *auth.Auth, act *autoAction) (out autoTaskOutc
 		uid = a.UID
 	}
 	defer func() {
-		// code 后附中文名（taskCodeZH 命中时）：上游 code 是 Sequential_Tasks_N
-		// 这类机器标识，日志里直读困难；未知 code 保持原样不加后缀。
-		code := taskCode
+		// 旧格式 `uid=<全 uuid> code=<机器码> status=… progress=a->b claim_error=""`：
+		// uid 太长、任务名挤在括号里、进度箭头与空 claim_error 都是噪音，阅读性差。
+		// 新格式（参考任务中心的中文口径；前缀保持 "panel: task " 命中频道归类）：
+		//   panel: task [小程序选专家对话] 水瓶(df6b07f7) 完成 · 领奖成功 · 进度 1/1
+		//   panel: task [小程序五次对话] 水瓶(df6b07f7) 领奖失败 · 进度 5/5（此前 0/5）· task not completed
+		// 未知任务 code 回退机器码；status 未知值原样透出，不丢信息。
+		name := taskCode
 		if zh := taskCodeZH[taskCode]; zh != "" {
-			code = taskCode + "（" + zh + "）"
+			name = zh
 		}
-		log.Printf("panel: task auto uid=%s code=%s status=%s progress=%s->%s claimed=%v claim_error=%q",
-			uid, code, out.Status, truncateStr(out.ProgressBefore, 64),
-			truncateStr(out.ProgressAfter, 64), out.Claimed, truncateStr(out.ClaimError, 180))
+		nick := ""
+		if a != nil {
+			nick = a.Nickname
+		}
+		var b strings.Builder
+		b.WriteString("panel: task [" + name + "] " + logfmt.Label(uid, nick) + " ")
+		switch out.Status {
+		case "done":
+			if out.Claimed {
+				b.WriteString("完成 · 领奖成功")
+			} else {
+				b.WriteString("完成 · 此前已领取")
+			}
+		case "skipped":
+			b.WriteString("跳过")
+		case "awaiting_progress":
+			b.WriteString("进行中（进度未达标）")
+		default:
+			b.WriteString(out.Status)
+		}
+		if out.ProgressAfter != "" {
+			b.WriteString(" · 进度 " + out.ProgressAfter)
+			if out.ProgressBefore != "" && out.ProgressBefore != out.ProgressAfter {
+				b.WriteString("（此前 " + out.ProgressBefore + "）")
+			}
+		}
+		msg := strings.TrimSpace(out.ClaimError)
+		if msg == "" && (out.Status == "error" || out.Status == "skipped") {
+			msg = strings.TrimSpace(out.Message)
+		}
+		if msg != "" {
+			b.WriteString(" · " + msg)
+		}
+		log.Printf("%s", b.String())
 	}()
 	if a == nil {
 		return autoTaskOutcome{Status: "error", Message: "账号凭证不可用"}
