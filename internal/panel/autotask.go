@@ -746,6 +746,31 @@ func taskProgressReached(t *upstream.Task) bool {
 		t.AcceptStatus == "completed" || strings.EqualFold(t.Status, "complete"))
 }
 
+// taskCodeZH 常见上游成长任务 code 的中文名（日志可读性）。名字沿用任务中心的
+// 中文口径；未知 code 不加后缀（上游随时可能上新任务，映射表缺项不报错）。
+var taskCodeZH = map[string]string{
+	"Sequential_Tasks_1": "小程序首对话",
+	"Sequential_Tasks_2": "小程序选专家对话",
+	"Sequential_Tasks_3": "小程序五次对话",
+	"Sequential_Tasks_4": "小程序定时任务",
+	"Sequential_Tasks_5": "小程序用 GLM5.2",
+	"Sequential_Tasks_6": "小程序十次对话",
+	"Sequential_Tasks_7": "体验灵感功能",
+	"first_buddy":        "首只 Buddy",
+	"chat_5":             "桌面五次对话",
+	"Model_chat_GLM5.2":  "GLM5.2 对话",
+	"RichMeow_Chat":      "富喵对话",
+	"Buddy_App":          "进入 Buddy 应用",
+	"Buddy_App_QQ":       "企鹅教师助手",
+	"automation_1":       "定时任务创建",
+	"Library_read":       "读资料库",
+	"template_5":         "模板任务×5",
+	"playbook_prompt":    "灵感做同款",
+	"create_canvas":      "创意画布",
+	"black_cat":          "夜猫子",
+	"school_season":      "校园日",
+}
+
 // executeAutoTask 统一执行任务：只在服务端确认进度达标后领奖，只有服务端确认已领
 // 或领奖接口成功才返回 done。已达标未领取时先领奖，避免重复执行真实对话动作。
 func (p *Panel) executeAutoTask(a *auth.Auth, act *autoAction) (out autoTaskOutcome) {
@@ -758,8 +783,14 @@ func (p *Panel) executeAutoTask(a *auth.Auth, act *autoAction) (out autoTaskOutc
 		uid = a.UID
 	}
 	defer func() {
+		// code 后附中文名（taskCodeZH 命中时）：上游 code 是 Sequential_Tasks_N
+		// 这类机器标识，日志里直读困难；未知 code 保持原样不加后缀。
+		code := taskCode
+		if zh := taskCodeZH[taskCode]; zh != "" {
+			code = taskCode + "（" + zh + "）"
+		}
 		log.Printf("panel: task auto uid=%s code=%s status=%s progress=%s->%s claimed=%v claim_error=%q",
-			uid, taskCode, out.Status, truncateStr(out.ProgressBefore, 64),
+			uid, code, out.Status, truncateStr(out.ProgressBefore, 64),
 			truncateStr(out.ProgressAfter, 64), out.Claimed, truncateStr(out.ClaimError, 180))
 	}()
 	if a == nil {
