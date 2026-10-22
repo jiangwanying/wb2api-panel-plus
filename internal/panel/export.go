@@ -5,6 +5,9 @@
 // 因此导出文件可直接回导；另附 realm / enterprise_id / device_token 等本仓扩展，
 // 回导时被 import 忽略（未知字段不报错）。
 //
+// 注意 expires_at 单位：cockpit 口径是毫秒（importCockpit 会 /1000），而内部
+// Auth.ExpiresAt 是秒——导出时 ×1000 转换，保证「导出 → 导入」到期时间无损。
+//
 // ⚠️ 响应包含明文凭证（access_token / refresh_token），与 /panel/api/* 同口径
 // 面板鉴权；前端下载前会二次确认。不要把导出文件提交进仓库或分享给他人。
 package panel
@@ -69,7 +72,7 @@ func (p *Panel) accountsExport(w http.ResponseWriter, r *http.Request) {
 			Nickname:     a.Nickname,
 			AccessToken:  a.AccessToken,
 			RefreshToken: a.RefreshToken,
-			ExpiresAt:    a.ExpiresAt,
+			ExpiresAt:    a.ExpiresAt * 1000, // cockpit 口径毫秒；import 会 /1000 还原
 			Domain:       a.Domain,
 			Realm:        a.Realm(),
 			EnterpriseID: a.EnterpriseID,
