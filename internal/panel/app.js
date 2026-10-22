@@ -398,6 +398,10 @@ setTimeout(() => {
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
 function renderAccounts(list) {
+  // 账号列表每次重绘都同步「运行日志」页的账号筛选下拉（含空池回退）。
+  // 放在本函数而非 loadOverview：overview 的沙箱测试只 stub renderAccounts，
+  // 在 loadOverview 里直接调用会让测试上下文缺函数而中断。
+  ensureAccountSelects();
   const tb = $('accBody');
   if (!list.length) {
     tb.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
@@ -544,7 +548,6 @@ async function loadOverview(quiet) {
     const up = Math.floor(d.uptime_sec);
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
     renderAccounts(d.accounts || []);
-    ensureAccountSelects();
     renderModelLocks(d.model_locks);
     // 到期提醒随首页统计一起刷新：只用响应里已有的最早到期快照，零上游请求。
     renderExpirySnapshot(d);
