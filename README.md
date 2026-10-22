@@ -1,39 +1,26 @@
-# WorkBuddy2API 整合版（wb2api-panel-plus）
+# WorkBuddy2API 整合版
 
-> 本仓基于 [misakano7545/workbuddy2api-panel](https://github.com/misakano7545/workbuddy2api-panel)（独立延续分支：三协议入站 / 反检测头族 / 零输出守卫 / 账号备份迁移等），并**回移**了 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 最终版（`73a7560`）的 4 个 PR：
->
-> - **#143 手机端适配**：独立 `mobile.css`（≤760px 抽屉侧栏 / 宽表卡片化）
-> - **#213 `/v1/search/messages`**：Anthropic Messages 兼容的联网搜索端点（DSH 搜索 provider 零改动接入）
-> - **#223 出站代理**：`HTTPS_PROXY / HTTP_PROXY / NO_PROXY` 环境变量生效（仅上游请求，不改其他流量）
-> - **#232 裸模型名跨域回退**：`pool.cross_domain_fallback`（默认关闭；显式 `cn:`/`global:` 前缀永不回退）
->
-> 另含本仓自有增强：运行日志页「**积分历史账号/时间筛选**」与「**请求记录账号下拉**」（服务端过滤 + 归档关闭时的客户端兜底）。
->
-> 定位：**自用整合版**，不是任何上游的官方延续；上游随时可能收紧导致通道不可用。License 见 [LICENSE](LICENSE)（MIT）。
-
----
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
-</p>
-
-<h1 align="center">WorkBuddy2API Panel</h1>
-
-<p align="center">
-  <b>把腾讯 CodeBuddy 账号变成 OpenAI 兼容 API 的多账号网关 · 附 Web 管理面板</b><br>
-  Web 面板 · OAuth 浏览器登录 · 账号池轮转 · 熔断与冷却 · 会话粘性 · **联网检索** · 定时签到 / 活跃 / 旅行 / 保活 · <b>成长任务一键完成（17/18）</b> · 流式 / 非流式
-</p>
+自用的多账号网关：把 WorkBuddy / CodeBuddy 账号池封装成 **OpenAI / Anthropic / Codex** 三协议 API，附 Web 管理面板与成长任务自动化。
 
 <p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.22.5-00ADD8?logo=go&logoColor=white&style=flat-square">
-  <img alt="API" src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square">
+  <img alt="API" src="https://img.shields.io/badge/API-OpenAI%20%7C%20Anthropic%20%7C%20Codex-412991?style=flat-square">
   <img alt="Deploy" src="https://img.shields.io/badge/Deploy-Single_Binary%20%7C%20Docker-2496ED?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
 </p>
 
----
+## 本仓特性
 
-> **来源与致谢**：本项目基于 [misakano7545/workbuddy2api-panel](https://github.com/misakano7545/workbuddy2api-panel)（三协议入站、反检测头族、稳定性增强）与 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)（上游最终版）二次整合；最初的设计与实现来自 Sliverkiss/workbuddy2api 及其后续维护者。感谢上述作者与社区的无私分享。本仓仅做整合与少量功能回移，**不代表也不隶属于任何上游项目**。
+- **三协议入站**：`/v1/chat/completions`、`/v1/messages`（Anthropic）、`/v1/responses`（Codex），Claude Code / Codex 可直连
+- **反检测与稳定性**：出站头族与会话 ID 对齐官方客户端、零输出守卫、模型不可用提升、繁忙退避
+- **管理面板**：账号池可视化、成长任务、积分构成、模型与档位、在线配置；运行日志支持账号/日期筛选
+- **运维能力**：账号备份/迁移、积分保底与保留积分、Prometheus 指标、移动端适配
+- **扩展接口**：`/v1/search` 联网检索、`/v1/search/messages`（Anthropic 搜索壳）、`/v1/images/*`
+- **出站代理**：支持 `HTTPS_PROXY / HTTP_PROXY / NO_PROXY`；裸模型名可开启跨域回退（`pool.cross_domain_fallback`）
+
+> **致谢与许可**：本项目为个人整合版本，设计思路与部分实现源自开源社区的历史项目；原始版权与 MIT 许可声明见 [LICENSE](LICENSE)。本项目不代表、不隶属于任何上游项目或腾讯 / WorkBuddy / CodeBuddy。
+
+---
 
 > [!IMPORTANT]
 > **维护定位**：本仓是**个人自用**的整合版本，按需维护，**不承诺**更新频率、响应时间或问题修复（无 SLA）。上游接口随时可能变化，部分功能可能随时失效。
