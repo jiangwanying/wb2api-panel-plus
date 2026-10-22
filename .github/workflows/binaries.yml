@@ -1,0 +1,97 @@
+name: binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - ".github/workflows/autobot.yml"
+      - "AutoBot.yml"
+      - "scripts/autobot.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: test
+        run: go test ./...
+
+      # ponytail: 标签发版用标签名，避免 CI 时钟和标签差一分钟变成两个号。
+      - name: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(TZ=Asia/Shanghai date +%Y.%-m.%-d.%-H%M)" >> "$GITHUB_ENV"
+          fi
+
+      - name: build
+        run: |
+          set -euo pipefail
+          # ponytail: 包结构跟上游一样；主程序 windows/linux/darwin × amd64/arm64
+          # （darwin 是 issue #23 的诉求：M 系列跑 arm64 原生，不套 Docker）。
+          mkdir -p dist
+          pack() {
+            dir="dist/$1-$2"
+            mkdir -p "$dir"
+            cp "$3" "$dir/"
+            cp config.example.json README.md "$dir/"
+            python3 -c 'import os,sys,zipfile; n,d=sys.argv[1:]; z=zipfile.ZipFile(n,"w",zipfile.ZIP_DEFLATED); [z.write(os.path.join(d,f), f) for f in os.listdir(d)]; z.close()' \
+              "dist/wb2api-panel-${VERSION}-$1-$2.zip" "$dir"
+          }
+          for os in windows linux darwin; do
+            bin=wb2api
+            [ "$os" = windows ] && bin=wb2api.exe
+            for arch in amd64 arm64; do
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                go build -trimpath -ldflags="-s -w -X main.appVersion=${VERSION}" -o "$bin" ./cmd/server
+              pack "$os" "$arch" "$bin"
+            done
+          done
+
+      # ponytail: 四个 upload，每个系统架构一个 artifact。matrix 等构建时间不够再用。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-windows-amd64
+          path: dist/windows-amd64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-windows-arm64
+          path: dist/windows-arm64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-linux-amd64
+          path: dist/linux-amd64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-linux-arm64
+          path: dist/linux-arm64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-darwin-amd64
+          path: dist/darwin-amd64
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wb2api-panel-${{ env.VERSION }}-darwin-arm64
+          path: dist/darwin-arm64
+          if-no-files-found: error
+
+      - name: release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${VERSION}" dist/*.zip --title "v${VERSION}" --generate-notes

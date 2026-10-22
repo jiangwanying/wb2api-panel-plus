@@ -1,0 +1,948 @@
+// Package scheduler 定时任务：签到 / 活跃上报 / 猫猫旅行 / token keepalive 四类独立排程。
+// 签到成功后重新查余额，余额 > 0 的冷却账号自动解冻。
+package scheduler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+)
+
+// Config 调度器依赖。
+//
+// 任务开关用「禁用」命名而非「启用」：零值 Config 即各类任务都启用（hours 回落默认），
+// 与引入开关前的行为逐字一致（老调用方/老测试无需改动）。
+type Config struct {
+	Pool           *pool.Pool
+	Upstream       *upstream.Client
+	CheckinHours   []int // 默认 [9, 21]
+	TravelHours    []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
+	ActivityHours  []int // 默认 [10]
+	KeepaliveHours []int // 默认 [22]
+	BlackcatHours  []int // 默认 [23]：夜猫子（23:00–08:00 计数窗口）
+	GrowthHours    []int // 默认 [11]：成长任务队列（任务中心待办）每日自动跑一遍
+
+	// ExpiringSoonWindow 快过期积分窗口：签到/余额刷新查余额时，把到期时间
+	// <= now+window 的套餐余额标记为"快过期"（pool 据此做最早到期优先，见
+	// entry.creditsEarliestExpiry）。<=0 时不做路由门槛；展示仍使用完整逐包数据。
+	ExpiringSoonWindow time.Duration
+
+	// CheckinDisabled 显式关闭签到排程（对应 config 的 schedule.checkin_enabled=false）。
+	// 禁用后不再有任何签到时点。旅行不再搭签到便车（已剥离为独立排程）。
+	CheckinDisabled bool
+	// TravelDisabled 显式关闭猫猫旅行排程（schedule.travel_enabled=false）。
+	TravelDisabled bool
+	// ActivityDisabled 显式关闭活跃上报排程（schedule.activity_enabled=false）。
+	ActivityDisabled bool
+	// KeepaliveDisabled 显式关闭 token 保活排程（schedule.keepalive_enabled=false）。
+	KeepaliveDisabled bool
+	// BlackcatDisabled 显式关闭夜猫子排程（schedule.blackcat_enabled=false）。
+	BlackcatDisabled bool
+	// GrowthDisabled 显式关闭成长任务队列排程（schedule.growth_enabled=false）。
+	GrowthDisabled bool
+	// IncludeDisabledInTasks 让「保号类」四任务（签到 / 活跃上报 / token 保活 /
+	// 余额刷新）对已禁用（disabled）的账号也执行（schedule.include_disabled_in_tasks）。
+	// 缺省 false = 保持「禁用的跳过」既有语义；打开后禁用号照常签到保号，但**仍不参与
+	// 选号**——pool.pick 侧的 disabled 过滤与本开关无关。
+	IncludeDisabledInTasks bool
+	// GrowthRunner 成长任务队列执行器：main 注入 panel 的实现（panel 已依赖本包，
+	// 反向 import 成环）。返回启动的待办项数与提示文案（0 项 = 无可执行待办）。
+	// 未注入（nil）时 growth 排程静默跳过——测试/未装配面板的部署不需额外判断。
+	GrowthRunner func() (int, string)
+
+	// SweepRunner 补领清扫执行器：main 注入 panel.RunTaskSweepNow。
+	// 未注入（nil）时排程静默跳过（同 GrowthRunner）。
+	SweepRunner func() (int, string)
+	// JitterMinutes 名义整点之后的确定性偏移窗口。0 = 精确整点。
+	JitterMinutes int
+	// AccountSpreadMinutes 账号级摊开窗口（issue #45）：排程触发的账号遍历型任务
+	// 把每个账号放在窗口内各自的偏移上（见 spread.go）。0 = 关闭（同一秒打全池）。
+	AccountSpreadMinutes int
+	// AccountSpreadMinGapSeconds 同批两个账号的最小间隔（冲突时推开）。0 = 只做随机。
+	AccountSpreadMinGapSeconds int
+	// RunStampFile 启动补跑去重记录的落盘路径（见 runstamps.go）。空 = 不持久化，
+	// 每次重启都补一轮（旧行为）。
+	RunStampFile string
+}
+
+// Scheduler 调度器。
+type Scheduler struct {
+	cfg Config
+
+	// mu/adoptTried 领养当日失败记录：uid → 自然日（CST）。门槛未达的账号当日不再重试，
+	// 避免同日多趟对上游重试轰炸；进程重启即清零（无需持久化）。
+	mu         sync.Mutex
+	adoptTried map[string]string
+
+	// stampMu 串行化补跑标记文件的读写（见 runstamps.go）。
+	stampMu sync.Mutex
+
+	// schedMu 保护排程参数（时点/开关）；Reconfigure 可在运行期热改（面板保存配置时调用）。
+	// rearmSchedule/rearmBalance/rearmSweep 是「排程已变，立即重算」通知：Run 与两个
+	// 分钟级循环各自消费，分别用独立 channel（同 channel 被多个 select 消费会丢信号）。
+	schedMu       sync.Mutex
+	rearmSchedule chan struct{}
+	rearmBalance  chan struct{}
+	rearmSweep    chan struct{}
+
+	// balanceInterval 余额刷新间隔（纳秒，0=暂停）。atomic 读写：执行循环每轮读当前值，
+	// SetBalanceInterval 可任意时刻热改（面板保存配置）。sweepInterval 同款，用于补领清扫。
+	balanceInterval atomic.Int64
+	sweepInterval   atomic.Int64
+
+	// compGuardMu/compGuard 补偿「本期已试过」记账（key = uid + "|" + end_time）。
+	//
+	// 为什么需要：上游 compensation-status 的 claimed 字段**恒为 false**（2026-10-20 实测，
+	// 已领过的号照样回 claimed:false），于是 Pending() 恒真 → 每次签到都重复 claim 一遍
+	// 全池 350 个号，白打请求却永远拿不到新发放。
+	// 只记进程内：重启后每期再试一次，代价可接受（次数极少），也不会漏掉上游新开的期次
+	// （end_time 变了就是新 key）。
+	compGuardMu sync.Mutex
+	compGuard   map[string]bool
+
+	// authHealMu/authHealAt 401→refresh 求证的退避记账（uid → 上次求证成功时刻）。
+	// 降级 token（billing 恒 401、chat 仍可用）会让每轮探测都 401，不设退避就是每
+	// 5 分钟轮换一次 RT——换不来可用凭据，只放大上游风控与并发竞态。
+	authHealMu sync.Mutex
+	authHealAt map[string]time.Time
+
+	// lastBalanceRefresh 最近一次后台余额刷新的完成时刻（Unix 纳秒，0=尚未跑过）。
+	// 供面板「到期提醒」标注数据年龄：卡片展示的是这份快照，必须让年龄可读，
+	// 否则界面 5 秒轮询会让人误以为数据也是 5 秒级新鲜。
+	lastBalanceRefresh atomic.Int64
+}
+
+// New 构建。
+func New(cfg Config) *Scheduler {
+	if len(cfg.CheckinHours) == 0 {
+		cfg.CheckinHours = []int{9, 21}
+	}
+	if len(cfg.TravelHours) == 0 {
+		cfg.TravelHours = []int{9, 21}
+	}
+	if len(cfg.ActivityHours) == 0 {
+		cfg.ActivityHours = []int{10}
+	}
+	if len(cfg.KeepaliveHours) == 0 {
+		cfg.KeepaliveHours = []int{22}
+	}
+	if len(cfg.BlackcatHours) == 0 {
+		cfg.BlackcatHours = []int{23}
+	}
+	if len(cfg.GrowthHours) == 0 {
+		cfg.GrowthHours = []int{11}
+	}
+	return &Scheduler{
+		cfg:           cfg,
+		adoptTried:    make(map[string]string),
+		rearmSchedule: make(chan struct{}, 1),
+		rearmBalance:  make(chan struct{}, 1),
+		rearmSweep:    make(chan struct{}, 1),
+	}
+}
+
+// ScheduleParams 排程热更新参数（面板保存配置后 Reconfigure 一次性传全量）。
+// ponytail: 位置参数已到 11 个（再加 growth 就是 13 个相邻 bool，传错不自知），
+// 改结构体按字段名传，语义自解释。
+type ScheduleParams struct {
+	CheckinHours   []int
+	TravelHours    []int
+	ActivityHours  []int
+	KeepaliveHours []int
+	BlackcatHours  []int
+	GrowthHours    []int
+
+	CheckinDisabled   bool
+	TravelDisabled    bool
+	ActivityDisabled  bool
+	KeepaliveDisabled bool
+	BlackcatDisabled  bool
+	GrowthDisabled    bool
+	// IncludeDisabledInTasks 保号类四任务是否覆盖禁用账号（见 Config 同名字段）。
+	IncludeDisabledInTasks bool
+
+	JitterMinutes int
+	// AccountSpreadMinutes / AccountSpreadMinGapSeconds 见 Config 同名字段。
+	AccountSpreadMinutes       int
+	AccountSpreadMinGapSeconds int
+}
+
+// ExpiringSoonWindow 返回当前快过期路由窗口（读取时与热配置写在 schedMu 下同步）。
+func (s *Scheduler) ExpiringSoonWindow() time.Duration {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.cfg.ExpiringSoonWindow
+}
+
+// SetExpiringSoonWindow 热更新快过期路由窗口。窗口变化时清空池内旧快照，避免在下一轮
+// 余额刷新覆盖前，继续用旧窗口得出的最早到期顺序选号。
+func (s *Scheduler) SetExpiringSoonWindow(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	s.schedMu.Lock()
+	changed := s.cfg.ExpiringSoonWindow != d
+	s.cfg.ExpiringSoonWindow = d
+	poolRef := s.cfg.Pool
+	s.schedMu.Unlock()
+	if changed && poolRef != nil {
+		poolRef.ClearExpiringSnapshots()
+	}
+}
+
+// Reconfigure 热更新排程参数（面板保存配置后调用）：改时点/开关并通知运行中的循环重算。
+// 空 hours 视为「未配置」保留原值（与 config.normalize 的回落语义一致）。
+func (s *Scheduler) Reconfigure(p ScheduleParams) {
+	hours := [][]int{p.CheckinHours, p.TravelHours, p.ActivityHours, p.KeepaliveHours, p.BlackcatHours, p.GrowthHours}
+	s.schedMu.Lock()
+	dst := []*[]int{&s.cfg.CheckinHours, &s.cfg.TravelHours, &s.cfg.ActivityHours,
+		&s.cfg.KeepaliveHours, &s.cfg.BlackcatHours, &s.cfg.GrowthHours}
+	for i, h := range hours {
+		if len(h) > 0 {
+			*dst[i] = h
+		}
+	}
+	s.cfg.CheckinDisabled = p.CheckinDisabled
+	s.cfg.TravelDisabled = p.TravelDisabled
+	s.cfg.ActivityDisabled = p.ActivityDisabled
+	s.cfg.KeepaliveDisabled = p.KeepaliveDisabled
+	s.cfg.BlackcatDisabled = p.BlackcatDisabled
+	s.cfg.GrowthDisabled = p.GrowthDisabled
+	s.cfg.IncludeDisabledInTasks = p.IncludeDisabledInTasks
+	s.cfg.JitterMinutes = p.JitterMinutes
+	s.cfg.AccountSpreadMinutes = p.AccountSpreadMinutes
+	s.cfg.AccountSpreadMinGapSeconds = p.AccountSpreadMinGapSeconds
+	s.schedMu.Unlock()
+	poke(s.rearmSchedule)
+	poke(s.rearmBalance)
+}
+
+// includeDisabledInTasks 保号类任务是否覆盖禁用账号（排程参数快照，循环开头取一次，
+// 与 Reconfigure 的并发写隔离——同本文件其它开关的读法）。
+func (s *Scheduler) includeDisabledInTasks() bool {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.cfg.IncludeDisabledInTasks
+}
+
+// GrowthEnabled 返回当前成长任务自动执行开关（与面板热配置同步）。
+func (s *Scheduler) GrowthEnabled() bool {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return !s.cfg.GrowthDisabled
+}
+
+// SetGrowthRunner 注入成长任务队列执行器（装配期调用一次；见 Config.GrowthRunner）。
+func (s *Scheduler) SetGrowthRunner(fn func() (int, string)) {
+	s.schedMu.Lock()
+	s.cfg.GrowthRunner = fn
+	s.schedMu.Unlock()
+}
+
+// SetSweepRunner 注入补领清扫执行器（装配期调用一次）。
+func (s *Scheduler) SetSweepRunner(fn func() (int, string)) {
+	s.schedMu.Lock()
+	s.cfg.SweepRunner = fn
+	s.schedMu.Unlock()
+}
+
+// poke 非阻塞发一次唤醒信号（已有待处理信号则忽略，语义等价）。
+func poke(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// nextFire 零抖动，供旧测试。正式排程走 nextFireKind。
+func nextFire(now time.Time, hours []int) time.Time {
+	return nextFireKind(now, hours, taskCheckin, 0)
+}
+
+func (k taskKind) String() string {
+	switch k {
+	case taskCheckin:
+		return "checkin"
+	case taskTravel:
+		return "travel"
+	case taskActivity:
+		return "activity"
+	case taskKeepalive:
+		return "keepalive"
+	case taskBlackcat:
+		return "blackcat"
+	case taskGrowth:
+		return "growth"
+	default:
+		return "task"
+	}
+}
+
+// jitterOffset 同一任务、同一天、同一小时永远同一偏移。
+// ponytail: FNV, not math/rand. nextWake recomputes every loop; a fresh random would refire the hour.
+func jitterOffset(kind taskKind, nominal time.Time, jitterMinutes int) time.Duration {
+	if jitterMinutes <= 0 {
+		return 0
+	}
+	secs := int64(jitterMinutes) * 60
+	h := fnv.New32a()
+	_, _ = fmt.Fprintf(h, "%s|%s", kind, nominal.Format("2006-01-02T15"))
+	return time.Duration(int64(h.Sum32())%secs) * time.Second
+}
+
+func nextFireKind(now time.Time, hours []int, kind taskKind, jitterMinutes int) time.Time {
+	var earliest time.Time
+	for _, hour := range hours {
+		// 时点按上游自然日的钟点解释（CST），不按宿主时区：UTC 容器里配 [10] 若用
+		// now.Location() 会跑在 CST 18:00（见 internal/cst 的包注释）。
+		local := now.In(cst.Loc)
+		for d := 0; d < 2; d++ {
+			nominal := time.Date(local.Year(), local.Month(), local.Day(), hour, 0, 0, 0, cst.Loc).AddDate(0, 0, d)
+			t := nominal.Add(jitterOffset(kind, nominal, jitterMinutes))
+			if !t.After(now) {
+				continue
+			}
+			if earliest.IsZero() || t.Before(earliest) {
+				earliest = t
+			}
+			break
+		}
+	}
+	return earliest
+}
+
+// taskKind 调度任务类型。
+type taskKind int
+
+const (
+	taskCheckin taskKind = iota
+	taskTravel
+	taskActivity
+	taskKeepalive
+	taskBlackcat
+	taskGrowth
+)
+
+// plannedSlot 一类任务的下一个触发时点（零时点 = 未配小时数 = 不跑）。
+type plannedSlot struct {
+	kind taskKind
+	at   time.Time
+}
+
+// enabledSlots 枚举启用任务族的下一个触发时点，是「有哪些任务族」的唯一口径。
+// nextWake（排程）与 missedToday（启动补跑）共用：两处各写一份枚举，正是
+// 「同一件事两套纪律」的温床——新增第七类任务时漏改一处，补跑会静默少一类，
+// 而这类缺口在日志里看不见（sheng-du0521 的「三十号误杀」复盘同源）。
+func (s *Scheduler) enabledSlots(now time.Time) []plannedSlot {
+	type spec struct {
+		off   bool
+		hours []int
+		kind  taskKind
+	}
+	s.schedMu.Lock()
+	specs := []spec{
+		{s.cfg.CheckinDisabled, s.cfg.CheckinHours, taskCheckin},
+		{s.cfg.TravelDisabled, s.cfg.TravelHours, taskTravel},
+		{s.cfg.ActivityDisabled, s.cfg.ActivityHours, taskActivity},
+		{s.cfg.KeepaliveDisabled, s.cfg.KeepaliveHours, taskKeepalive},
+		{s.cfg.BlackcatDisabled, s.cfg.BlackcatHours, taskBlackcat},
+		{s.cfg.GrowthDisabled, s.cfg.GrowthHours, taskGrowth},
+	}
+	jitter := s.cfg.JitterMinutes
+	s.schedMu.Unlock()
+
+	out := make([]plannedSlot, 0, len(specs))
+	for _, sp := range specs {
+		if sp.off {
+			continue
+		}
+		out = append(out, plannedSlot{kind: sp.kind, at: nextFireKind(now, sp.hours, sp.kind, jitter)})
+	}
+	return out
+}
+
+// missedToday 返回「今天的时点已全部过去」的启用任务族（下一次触发已落到别的日子）。
+// 进程停机跨过时点后重启时用它补跑——迟到唤醒补跑只管「进程活着、timer 被睡眠冻结」，
+// 管不到进程本身没在跑。各任务按天幂等（夜猫子等窗口类自带守卫），补一轮无副作用。
+//
+// shortcut: 判据只看「下一次触发是否落在今天」，跨零点窗口（夜猫子 23:00–08:00）
+// 若在 00:00–08:00 之间重启，昨夜那一轮不会被补——真有这种重启再升级判据。
+func (s *Scheduler) missedToday(now time.Time) []taskKind {
+	var out []taskKind
+	for _, sl := range s.enabledSlots(now) {
+		if sl.at.IsZero() {
+			continue // 未配小时数：本来就不跑
+		}
+		if sl.at.Year() != now.Year() || sl.at.YearDay() != now.YearDay() {
+			if s.ranToday(sl.kind, now) {
+				continue // 今天已补跑过一轮：重启不该再把同样的请求打一遍
+			}
+			out = append(out, sl.kind)
+		}
+	}
+	return out
+}
+
+// nextWake 返回 now 之后最近的唤醒时刻，以及该时刻需要执行的全部任务。
+// 多类任务若配到同一小时（如签到与旅行都含 9），该时刻多类任务需一并执行。
+// 已显式禁用的任务不进候选（nextFire 对其零值返回零时间，nextWake 再跳过零时点）。
+// 排程参数在 schedMu 下快照，与 Reconfigure 的并发写隔离。
+func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
+	slots := s.enabledSlots(now)
+	var earliest time.Time
+	for _, sl := range slots {
+		if sl.at.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || sl.at.Before(earliest) {
+			earliest = sl.at
+		}
+	}
+	if earliest.IsZero() {
+		return time.Time{}, nil
+	}
+	var kinds []taskKind
+	for _, sl := range slots {
+		if !sl.at.IsZero() && sl.at.Equal(earliest) {
+			kinds = append(kinds, sl.kind)
+		}
+	}
+	return earliest, kinds
+}
+
+// wakeupGraceDelay 迟到唤醒补跑的派发前网络宽限：Windows Modern Standby exit 后
+// 网络栈/DNS 1-2s 才恢复（issue #152 实测 dial tcp lookup no such host 与
+// Kernel-Power 507 standby exit ≤1s 重合），宽限 5s 覆盖 90%+ 唤醒场景。
+// 只对迟到补跑生效（准点触发零延迟），零配置。测试可缩短（与
+// travelAccountDelay「测试可置 0」同口径）。
+var wakeupGraceDelay = 5 * time.Second
+
+// wakeupLateThreshold 迟到判定阈值：now 晚于槽位计划时刻超过 1s 才算迟到补跑。
+// 毫秒级抖动（timer 正常触发的偏移量级）不算，避免准点触发被误宽限。
+const wakeupLateThreshold = 1 * time.Second
+
+// awaitWakeupGrace 迟到唤醒补跑派发前的网络宽限：槽位时刻已过点超过阈值
+// （机器刚从睡眠唤醒）时先等满 wakeupGraceDelay 让网络栈/DNS 就绪再派发。
+// 准点/阈值内抖动零延迟直接放行。ctx 取消立即返回 false（优雅停机不等宽限
+// 睡满，本批放弃，下轮 nextWake 照旧从"现在"起算）。返回是否继续派发。
+func awaitWakeupGrace(ctx context.Context, planned time.Time) bool {
+	if late := time.Since(planned); late <= wakeupLateThreshold {
+		return ctx.Err() == nil // 准点触发：零延迟放行
+	}
+	log.Printf("wakeup grace %s: late catch-up for slot %s", wakeupGraceDelay, planned.Format("15:04"))
+	return sleepCtx(ctx, wakeupGraceDelay)
+}
+
+// wallclockCheckStep 墙钟校验段长：等待槽位时单次 timer 的最大时长，每段醒来用
+// 墙钟重判是否到点。值是「时点精度」与「空闲唤醒频率」的折中——60s 段内时点
+// 偏差上限 60s，对签到/保活类任务足够。
+const wallclockCheckStep = time.Minute
+
+// slotWake waitSlot 的三态结果。
+type slotWake int
+
+const (
+	slotFired  slotWake = iota // 墙钟已到达计划时点：补跑本批
+	slotRearm                  // 排程已变（Reconfigure）：上层重算下一次唤醒
+	slotCancel                 // ctx 取消：上层优雅退出
+)
+
+// waitSlot 分段等待到 next 的**墙钟**时刻（next 由 nextFire 用 time.Date 构造、
+// 不携带单调读数，time.Until 对它是纯墙钟差）。
+//
+// 为什么不一把 time.NewTimer(time.Until(next)) 睡到底：timer 的等待基于单调时钟，
+// macOS / Windows Modern Standby 睡眠会冻结它——睡眠时长不足整个等待时，fire
+// 被顺延「睡眠时长」（墙钟已过点、timer 还要继续等），时点被错过且不会立即补跑；
+// 睡眠时长超过整个等待时倒是无害的（唤醒瞬间 timer 到期，awaitWakeupGrace 补跑）。
+// 分段睡、每段醒来用墙钟重判，把冻结的影响限制在一段之内：睡眠结束后的第一段
+// 末尾必然发现「墙钟已越过时点」并立即补跑，偏差上限 = step + 睡眠落段余量。
+//
+// ctx 取消 / rearmSchedule（在线改配置重排）在每段的 select 里随时返回，段长
+// 不影响两者响应性。返回三态见 slotWake。
+func (s *Scheduler) waitSlot(ctx context.Context, next time.Time, step time.Duration) slotWake {
+	for {
+		wallRemain := time.Until(next)
+		if wallRemain <= 0 {
+			return slotFired
+		}
+		d := wallRemain
+		if d > step {
+			d = step
+		}
+		timer := time.NewTimer(d)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return slotCancel
+		case <-s.rearmSchedule:
+			timer.Stop()
+			return slotRearm
+		case <-timer.C:
+			// 段末回到循环顶用墙钟重判：正常推进时若干段后到点；单调时钟被
+			// 睡眠冻结时，墙钟大幅前进，至多一段之后即到点补跑。
+		}
+	}
+}
+
+// Run 主循环，阻塞直到 ctx 取消。
+// Reconfigure 触发 rearmSchedule 时提前唤醒重算（新时点/开关立即生效）。
+func (s *Scheduler) Run(ctx context.Context) {
+	// 启动补跑：进程停机（部署 / 重启 / 崩溃）跨过今天的时点，迟到唤醒补跑救不了
+	// ——它只管进程活着时 timer 被睡眠冻结。这里补一轮：各任务按天幂等，
+	// 窗口类（夜猫子）自带守卫，重复一轮不会打出无意义请求。
+	if missed := s.missedToday(cst.Now()); len(missed) > 0 {
+		log.Printf("启动补跑：%v（今天的时点已过）", missed)
+		if !sleepCtx(ctx, wakeupGraceDelay) {
+			return // 开机瞬间网络/DNS 可能未就绪（同 issue #152 的宽限口径）
+		}
+		s.runBatch(ctx, missed)
+		s.markRan(missed, cst.Now())
+	}
+	for {
+		next, kinds := s.nextWake(cst.Now())
+		if next.IsZero() {
+			// 四类任务全部禁用：不空转，等重排通知（在线改配置重新启用）或退出信号。
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.rearmSchedule:
+				continue
+			}
+		}
+		switch s.waitSlot(ctx, next, wallclockCheckStep) {
+		case slotCancel:
+			return
+		case slotRearm:
+			continue // 排程已变：重算下一次唤醒
+		case slotFired:
+			// 到点任务在排程时确定（不依赖唤醒时刻的小时数），迟到唤醒也不会漏跑。
+			// 迟到唤醒（睡眠跨过槽位时刻，timer 在唤醒瞬间才到期）先等网络宽限：
+			// 唤醒瞬间 DNS 未就绪，零宽限派发等于把唯一一次补跑机会打在注定失败
+			// 的窗口里（issue #152）；准点触发零延迟不受影响。
+			if !awaitWakeupGrace(ctx, next) {
+				return // ctx 取消：放弃本批，优雅退出
+			}
+			// 唤醒时全部并行派发：每类一个 goroutine，慢任务族（如活跃上报
+			// 多号 × 间隔 ≈ 数分钟睡眠）不再阻塞同槽其他任务族；返回前等全部
+			// 任务收尾（下一轮 nextWake 照旧从"现在"起算，多轮重叠的风险与
+			// 串行版相同——nextWake 只挑现在之后的时点）。
+			s.runBatch(ctx, kinds)
+		}
+	}
+}
+
+// spreadRunning 窗口 > 0 时各任务族的「上一批还没收尾」标记。
+//
+// 摊开会把一批从几十秒拉长到数十分钟，跨过下一个时点；没有它，下一时点会再派一批
+// 同类任务，两批在同一模型/同一账号上并发叠加——摊开换来的相关性收益当场还回去。
+var spreadRunning [6]atomic.Bool
+
+// runBatch 并行派发一批任务（同一唤醒时刻的多类任务），等全部完成返回。
+// ctx 取消时由各任务内部的可取消等待快速收尾。
+//
+// 账号摊开启用时不等待：一批可能持续到下一个时点，等它等于让后面所有时点排队漏跑
+// （Run() 只挑现在之后的时点，过了就是漏掉，不是延迟）。收尾靠 spreadRunning。
+func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
+	spread := s.spreadEnabled()
+	var wg sync.WaitGroup
+	for _, k := range kinds {
+		if spread && !spreadRunning[k].CompareAndSwap(false, true) {
+			log.Printf("spread: %s 上一批尚未收尾，跳过本时点", k)
+			continue
+		}
+		wg.Add(1)
+		go func(k taskKind) {
+			defer wg.Done()
+			if spread {
+				defer spreadRunning[k].Store(false)
+			}
+			switch k {
+			case taskCheckin:
+				s.runCheckin(ctx, spread)
+			case taskTravel:
+				s.runTravel(ctx, spread)
+			case taskActivity:
+				s.runActivity(ctx, spread)
+			case taskKeepalive:
+				s.runKeepalive(ctx, spread)
+			case taskBlackcat:
+				s.runBlackcat(ctx, spread)
+			case taskGrowth:
+				s.RunGrowthNow()
+			}
+		}(k)
+	}
+	if !spread {
+		wg.Wait()
+	}
+}
+
+// spreadEnabled 账号摊开是否启用（窗口 > 0）。
+func (s *Scheduler) spreadEnabled() bool {
+	w, _ := s.spreadParams()
+	return w > 0
+}
+
+// sleepCtx 可取消的等待：ctx 取消立即返回 false（优雅停机不必等限速睡醒），
+// 等满返回 true。d<=0 立即放行。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// RunCheckinNow 立即对所有账号执行签到 + 余额刷新 + 解冻。
+// 冷却中的账号也参与（签到就是为了解冻它们）；禁用账号默认跳过——
+// 若 schedule.include_disabled_in_tasks 打开则一并执行（禁用只关选号，不停保号）。
+// 旅行已从签到剥离为独立排程（travel_hours），不再搭签到便车。
+// 末尾追加连登管家（streak.go）：可兑换档位自动兑换 + 抽奖次数自动抽完——
+// 连登兑换按天数解锁，挂在每日签到后即「到天数那天自动完成兑换→抽奖闭环」。
+func (s *Scheduler) RunCheckinNow() {
+	s.runCheckin(context.Background(), false)
+}
+
+// runCheckin 签到遍历。spread=true（排程路径）时按账号级偏移错开，见 spread.go。
+func (s *Scheduler) runCheckin(ctx context.Context, spread bool) {
+	plan := s.spreadPlan(taskCheckin, spread, cst.Now())
+	expiringSoon := s.ExpiringSoonWindow()
+	includeDisabled := s.includeDisabledInTasks()
+	for _, st := range s.cfg.Pool.List() {
+		if st.Disabled && !includeDisabled {
+			continue
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		// 无 refresh token 的账号默认跳过（保号以刷新为前提）；静态 API Key 例外——
+		// 它没有 refresh token 也不需要刷新，但下方余额刷新（企业口径）是 credit_floor
+		// 与面板额度的唯一数据源，必须照跑。带 access token 的 JWT 账号保持现状跳过。
+		if a == nil || (a.RefreshTokenValue() == "" && !a.IsAPIKey()) {
+			continue
+		}
+		// D4 门控：realm=global 账号无签到体系，直接跳过（不发起任何上游调用，避免风控）。
+		// 经 auth.Realm() 统一判定：逃生门（global.enabled=false）下 global 账号被降级为 cn、
+		// 按 CN 处理——这是逃生门的刻意语义（纯 CN 部署锁死一切 global），与引用处一致。
+		if a.IsGlobal() {
+			continue
+		}
+		if !plan.wait(ctx, st.UID) {
+			return // ctx 取消：剩余账号下轮再签
+		}
+		// 企业版无签到体系：上游对 POST /v2/billing/meter/daily-checkin 直接
+		// 400 code 10001「企业账号不支持该操作」。跳过签到，但**不 continue**——
+		// 下方余额查询照常跑（企业额度走 get-enterprise-user-usage 口径，且是
+		// credit_floor 判定与面板额度展示的唯一数据源）。
+		if a.SupportsPersonalEndpoints() {
+			// 先查活动状态（只读）：本机 checkin_done 只记录我们自己发起的签到，用户从手机 /
+			// 官方客户端签过就看不到；上游 today_checked_in 才是权威事实。已签则直接记账跳过
+			// （省掉 21:00 那一轮注定被幂等拒绝的写调用），顺带把连登与活动截止落进日志；
+			// active=false 说明活动已结束/未开始，提前显形。**查询失败 fail-open**——照常签到
+			// （签到自身的幂等错误标记仍是兜底判据）。
+			label := logfmt.Label(st.UID, st.Nickname)
+			act, actErr := s.cfg.Upstream.GetCheckinActivityStatus(a)
+			switch {
+			case actErr != nil:
+				log.Printf("WARN: checkin %s: 活动状态查询失败（照常签到）: %v", label, actErr)
+			case !act.Active:
+				log.Printf("WARN: checkin %s: 上游签到活动当前不生效（截止 %s），仍尝试签到", label, act.EndTime)
+			}
+			if actErr == nil && act.TodayCheckedIn {
+				s.cfg.Pool.NoteCheckinDone(st.UID)
+				log.Printf("checkin %s: 上游显示今天已签到（连登 %d 天，活动至 %s）", label, act.StreakDays, act.EndTime)
+			} else if err := s.cfg.Upstream.DailyCheckin(a); err != nil {
+				// "今天已签到"是幂等成功（上游对重复签到返回 code!=0），不再当失败打 error 行。
+				if upstream.IsAlreadyCheckin(err) {
+					s.cfg.Pool.NoteCheckinDone(st.UID)
+					log.Printf("checkin %s: 今天已签到（幂等）", label)
+				} else {
+					log.Printf("WARN: checkin %s: %v", label, err)
+				}
+				// 其余业务错误也继续走余额查询
+			} else {
+				// 首次签到成功此前静默——排查「签到到底跑没跑」时无迹可循（幂等行只在
+				// 重复触发时出现），成功也落一行。
+				s.cfg.Pool.NoteCheckinDone(st.UID)
+				log.Printf("checkin %s: 签到成功", label)
+			}
+		}
+		// 分桶查余额：配置窗口内的积分单独标记，同时记录最早未来到期批次与
+		// 按自然日聚合的全部批次（首页快照与明细共用同一口径）。
+		remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
+		if err != nil {
+			log.Printf("WARN: user-resource %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+			continue
+		}
+		s.cfg.Pool.ReenableIfCredits(st.UID, remain, total)
+		s.cfg.Pool.SetCreditsSnapshot(st.UID, pool.CreditsSnapshot{
+			Remain:            remain,
+			Total:             total,
+			Expiring:          expiring,
+			EarliestAt:        earliestAt,
+			EarliestRemaining: earliestRemaining,
+			ExpiryBuckets:     poolExpiryBuckets(buckets),
+		})
+	}
+	s.RunStreakBonusNow()
+}
+
+// RunActivityNow 立即对池内所有可用账号执行一次对话活跃上报。
+// 禁用账号跳过；无 AccessToken 的跳过；账号间限速 activityAccountDelay。
+// 一条上报同时点亮 growth 连登 + 解锁 first_buddy 任务。
+// 上报成功后续跑 streak 自检（checkActivityStreak）：回读连登天数，发现
+// 「上报 200 但 streak 没涨」的静默丢弃（只读 oracle，不做重试）。
+// RunActivityNow 是无 ctx 的外部入口（面板/测试一次性触发）；排程主循环走
+// runActivity（ctx 取消时立即放弃剩余账号，不等限速睡满）。
+func (s *Scheduler) RunActivityNow() {
+	s.runActivity(context.Background(), false)
+}
+
+// runActivity 活跃上报遍历，随 ctx 取消立即退出。
+func (s *Scheduler) runActivity(ctx context.Context, spread bool) {
+	plan := s.spreadPlan(taskActivity, spread, cst.Now())
+	first := true
+	includeDisabled := s.includeDisabledInTasks()
+	for _, st := range s.cfg.Pool.List() {
+		if st.Disabled && !includeDisabled {
+			continue
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		if a == nil || a.AccessTokenValue() == "" {
+			continue
+		}
+		// 企业版跳过活跃上报：/v2/report 本身返回 200（不报错），但它唯一的作用是
+		// 点亮 growth 连登天数 / 解锁 first_buddy 领养——两者对企业号都是 403
+		// （「growth system is only available for personal users」），即零收益。
+		// 该类「静默无效」最易被忽略（日志无异常），故显式跳过，不给上游多发一次请求。
+		if !a.SupportsPersonalGrowth() {
+			continue
+		}
+		if !plan.wait(ctx, st.UID) {
+			return // ctx 取消：剩余账号下轮再报
+		}
+		// 注意：活跃上报**不**跳过 global 账号（上游 a190252 同口径）。国际版
+		// /v2/report 在 workbuddy.ai 上实测 code=0 可用（PR #45），billingBase(a)
+		// 按 realm 切 base、BillingHeaders 按 realm 切 Origin/Referer/UA——此前
+		// 照抄的「D4 门控：global 无任务中心/活跃体系」会让国际版从不发上报，
+		// 连登永远点不亮、每日积分拿不到。签到/旅行各自的 global 门控不在此列
+		// （它们确实没有国际版端点），别顺手删。
+		if !first {
+			if !sleepCtx(ctx, activityAccountDelay) {
+				return // 优雅停机：不等限速睡满，剩余账号下轮再报
+			}
+		}
+		first = false
+		// 会话 ID 用官方形态（v4 UUID）。旧值是 `wb2api-<毫秒>`——项目缩写直接进上报体
+		// （issue #51）；ReportChatActivity 把它写进 conversationId / parentConversationId。
+		cid := session.NewConversationID()
+		if err := s.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
+			log.Printf("WARN: activity %s: %v", logfmt.Label(a.UID, a.Nickname), err)
+			continue
+		}
+		s.checkActivityStreak(a) // 上报成功 → 回读 streak 自检
+	}
+}
+
+// checkActivityStreak 上报成功后回读连登天数（只读 oracle，发现静默失败）。
+// 背景：REPORT-active-map.md §2 实测「上报 200 但静默丢弃」（缺 userId 时 progress 不动），
+// 上报 200 ≠ streak 计分——需要回读验证闭环。
+// 异常检测口径：days==0 → warn（report OK but streak.days=0 (silent drop?)）；
+// GET 失败 → warn 但不影响主流程（上报本身已成功，按天幂等，不做重试）。
+// 日志每号一行、一眼可 grep：`activity %s: streak days=%d`（成功也打，方便对账）。
+// 返回 true 表示「上报 OK 但 streak 可疑」（days==0 或回读失败），供测试断言。
+func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
+	days, err := s.cfg.Upstream.GrowthStreak(a)
+	if err != nil {
+		log.Printf("WARN: activity %s: streak check failed (report OK): %v", logfmt.Label(a.UID, a.Nickname), err)
+		return true
+	}
+	if days == 0 {
+		log.Printf("WARN: activity %s: report OK but streak.days=0 (silent drop?)", logfmt.Label(a.UID, a.Nickname))
+		return true
+	}
+	log.Printf("activity %s: streak days=%d", logfmt.Label(a.UID, a.Nickname), days)
+	return false
+}
+
+// RunKeepaliveNow 立即对所有账号刷新 token；session 死亡的自动禁用。
+// 禁用账号默认跳过；若 schedule.include_disabled_in_tasks 打开，禁用号也会续期 token
+// （这是轮换用法下把闲置号保持可用的关键），但**不再对已禁用的号重复计数 12153**——
+// 它已经是终态，再计一次只会打出一行「— 禁用」的误导日志。
+// 12153 禁用走 Pool.NoteSessionDead 的**连续计数**语义：一次刷新失败不再立即杀号，
+// 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
+// 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
+func (s *Scheduler) RunKeepaliveNow() {
+	s.runKeepalive(context.Background(), false)
+}
+
+// runKeepalive 保活遍历。spread=true（排程路径）时按账号级偏移错开，见 spread.go。
+func (s *Scheduler) runKeepalive(ctx context.Context, spread bool) {
+	plan := s.spreadPlan(taskKeepalive, spread, cst.Now())
+	includeDisabled := s.includeDisabledInTasks()
+	for _, st := range s.cfg.Pool.List() {
+		if st.Disabled && !includeDisabled {
+			continue
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		if a == nil || a.RefreshTokenValue() == "" {
+			continue
+		}
+		if !plan.wait(ctx, st.UID) {
+			return // ctx 取消：剩余账号下轮再续
+		}
+		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
+			log.Printf("WARN: keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+			var ue *upstream.Error
+			if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead && !st.Disabled {
+				if s.cfg.Pool.NoteSessionDead(st.UID) {
+					log.Printf("WARN: keepalive %s: 连续 %d 次 12153 session dead — 禁用", logfmt.Label(st.UID, st.Nickname), pool.SessionDeadThreshold())
+				}
+			}
+			continue
+		}
+		s.cfg.Pool.ClearSessionDead(st.UID) // 刷新成功清误判计数，失败不该累计
+		if err := a.SaveAtomicRetry(); err != nil {
+			log.Printf("WARN: keepalive %s save: %v", logfmt.Label(st.UID, st.Nickname), err)
+		}
+	}
+}
+
+// poolExpiryBuckets 把 upstream 的按日到期批次转换为 pool 结构。两个包字段同构，
+// 手工转换是为了不让底层 pool 反向依赖 upstream。
+func poolExpiryBuckets(in []upstream.ExpiryBucket) []pool.ExpiryBucket {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]pool.ExpiryBucket, len(in))
+	for i, b := range in {
+		out[i] = pool.ExpiryBucket{Date: b.Date, ExpireAt: b.ExpireAt, Remain: b.Remain}
+	}
+	return out
+}
+
+// RunBalanceRefreshNow 并发查询余额并更新池内 credits。
+// 账号范围：默认跳过禁用账号；schedule.include_disabled_in_tasks 打开时一并刷新
+// （轮换用法下据此判断下一个该启用谁）。注意 ReenableIfCredits 对 disabled 是
+// no-op，所以本开关**不会**导致禁用号被自动解冻——它只让已有账号的积分保持新鲜。
+// 解冻语义与签到一致（ReenableIfCredits：余额 > 0 的冷却账号自动解冻），
+// 但不做签到、不刷新 token——只让"积分"这个观测量保持新鲜。
+// 供两类入口复用：后台周期任务（StartBalanceRefresh）与面板手动全量刷新。
+func (s *Scheduler) RunBalanceRefreshNow() {
+	var wg sync.WaitGroup
+	expiringSoon := s.ExpiringSoonWindow()
+	includeDisabled := s.includeDisabledInTasks()
+	for _, st := range s.cfg.Pool.List() {
+		if st.Disabled && !includeDisabled {
+			continue
+		}
+		a := s.cfg.Pool.AuthByUID(st.UID)
+		if a == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(a *auth.Auth, uid string) {
+			defer wg.Done()
+			remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
+			if err != nil {
+				log.Printf("WARN: balance %s: %v", logfmt.Label(uid, a.Nickname), err)
+				s.noteBalanceAuthFailure(a, uid, err)
+				return
+			}
+			s.cfg.Pool.ReenableIfCredits(uid, remain, total)
+			s.cfg.Pool.SetCreditsSnapshot(uid, pool.CreditsSnapshot{
+				Remain:            remain,
+				Total:             total,
+				Expiring:          expiring,
+				EarliestAt:        earliestAt,
+				EarliestRemaining: earliestRemaining,
+				ExpiryBuckets:     poolExpiryBuckets(buckets),
+			})
+		}(a, st.UID)
+	}
+	wg.Wait()
+	s.lastBalanceRefresh.Store(time.Now().UnixNano())
+}
+
+// StartBalanceRefresh 后台周期性余额刷新（独立 ticker goroutine，ctx 取消即停）。
+// interval<=0 不启动（schedule.balance_refresh_enabled=false 时 main 不调用即可）。
+// 独立于 Run 的小时制排程：余额是分钟级观测量，不值得为它扩展 nextFire 的粒度。
+// 运行期可用 SetBalanceInterval 热改间隔（下一轮生效）。
+func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	s.balanceInterval.Store(int64(interval))
+	go func() {
+		// 启动即刷一轮：进程重启（含升级到带按日批次的版本）后旧 state 可能没有
+		// credits_expiry_buckets；不等第一个 ticker，首页快照就能拿到与明细
+		// 同口径的完整数据，避免升级后前 5 分钟仍显示旧口径。
+		s.RunBalanceRefreshNow()
+		var logged time.Duration
+		for {
+			cur := time.Duration(s.balanceInterval.Load())
+			if cur != logged {
+				log.Printf("scheduler: 余额后台刷新每 %s（暂停中显示 0s）", cur)
+				logged = cur
+			}
+			if cur <= 0 {
+				// 被热改暂停：等重排通知（重新启用时唤醒）或退出。
+				select {
+				case <-ctx.Done():
+					return
+				case <-s.rearmBalance:
+					continue
+				}
+			}
+			timer := time.NewTimer(cur)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-s.rearmBalance:
+				timer.Stop() // 间隔已变：立刻按新值重算
+			case <-timer.C:
+				s.RunBalanceRefreshNow()
+			}
+		}
+	}()
+}
+
+// SetBalanceInterval 热改余额刷新间隔；<=0 表示暂停循环（面板关闭该开关时）。
+func (s *Scheduler) SetBalanceInterval(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	s.balanceInterval.Store(int64(d))
+	poke(s.rearmBalance)
+}
+
+// BalanceInterval 当前余额后台刷新间隔（0=暂停）。面板 overview 据此告诉用户
+// 「到期提醒」卡片的数据节奏，而不是让 5 秒界面轮询冒充数据新鲜度。
+func (s *Scheduler) BalanceInterval() time.Duration {
+	return time.Duration(s.balanceInterval.Load())
+}
+
+// BalanceRefreshedAt 最近一次后台余额刷新的完成时刻（零值 = 尚未跑过）。
+func (s *Scheduler) BalanceRefreshedAt() time.Time {
+	if v := s.lastBalanceRefresh.Load(); v != 0 {
+		return time.Unix(0, v)
+	}
+	return time.Time{}
+}
