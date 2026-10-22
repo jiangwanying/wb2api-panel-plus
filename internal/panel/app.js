@@ -624,7 +624,7 @@ function probeDays(ts) {
   return isNaN(d) ? null : Math.floor(d);
 }
 function outCell(m, pr) {
-  if (!pr) return '<td class="num">' + (m.max_output_tokens ? fmtK(m.max_output_tokens) : '—') + '</td>';
+  if (!pr) return '<td class="num c">' + (m.max_output_tokens ? fmtK(m.max_output_tokens) : '—') + '</td>';
   const tip = '声称 ' + (pr.claimed ? fmtK(pr.claimed) : '?') + ' · 实测 ' + (pr.measured ? fmtK(pr.measured) : '?') +
     (pr.note ? ' · ' + pr.note : '') + (pr.tested_at ? ' · 探测于 ' + pr.tested_at : '');
   const days = probeDays(pr.tested_at);
@@ -633,15 +633,15 @@ function outCell(m, pr) {
     if (pr.claimed && pr.measured < pr.claimed) {
       const x = pr.claimed / pr.measured;
       const xs = (x >= 10 ? Math.round(x) : Math.round(x * 10) / 10) + '×';
-      return '<td class="num" title="' + esc(tip) + '"><span style="color:var(--warn);font-weight:600">' +
+      return '<td class="num c" title="' + esc(tip) + '"><span style="color:var(--warn);font-weight:600">' +
         fmtK(pr.measured) + ' ⚠</span><div class="note">钳制 ' + xs + stale + '</div></td>';
     }
-    return '<td class="num" title="' + esc(tip) + '"><span style="color:var(--ok)">' + fmtK(pr.measured) +
+    return '<td class="num c" title="' + esc(tip) + '"><span style="color:var(--ok)">' + fmtK(pr.measured) +
       (pr.claimed && pr.measured > pr.claimed ? ' ↑' : ' ✓') + '</span></td>';
   }
   if (pr.verdict === 'at_least' && pr.measured)
-    return '<td class="num" title="' + esc(tip) + '"><span style="color:var(--ink-3)">≥' + fmtK(pr.measured) + '</span></td>';
-  return '<td class="num" title="' + esc(tip) + '"><span style="color:var(--ink-3)">?</span><div class="note">未测出' + stale + '</div></td>';
+    return '<td class="num c" title="' + esc(tip) + '"><span style="color:var(--ink-3)">≥' + fmtK(pr.measured) + '</span></td>';
+  return '<td class="num c" title="' + esc(tip) + '"><span style="color:var(--ink-3)">?</span><div class="note">未测出' + stale + '</div></td>';
 }
 
 /* rateCell 倍率列：牌价 vs 生效价。上游 credits 是牌价（转正后基准倍率），
@@ -711,7 +711,7 @@ function imageRateCell(m) {
 
 async function loadModels(force) {
   const tb = $('mdBody');
-  tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
+  tb.innerHTML = '<tr><td colspan="8"><div class="empty">正在向上游查询…</div></td></tr>';
   try {
     // 探测、模型锁与最近请求都是本地可选增强：任一失败不影响模型目录本身。
     // 可用性标签不额外发推理请求，只用模型锁和最近真实请求结果合成。
@@ -728,7 +728,7 @@ async function loadModels(force) {
     mdLocks = Array.isArray(st.model_locks) ? st.model_locks : [];
     mdRecent = Array.isArray(rm.recent) ? rm.recent : [];
     if (!mdAll.length) {
-      tb.innerHTML = '<tr><td colspan="7"><div class="empty">上游未返回模型</div></td></tr>';
+      tb.innerHTML = '<tr><td colspan="8"><div class="empty">上游未返回模型</div></td></tr>';
       $('mdCount').textContent = '';
       $('mdNote').textContent = '上游未返回模型';
       return;
@@ -744,7 +744,7 @@ async function loadModels(force) {
     renderModels();
   } catch (e) {
     mdAll = [];
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' + esc(e.message) + '</div></td></tr>';
     $('mdCount').textContent = '';
   }
 }
@@ -893,19 +893,21 @@ function mdRowHtml(m, pr) {
   if (m.supports_images) caps.push('<span class="tag warn">视觉</span>');
   if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
-  // 拥堵状态独立成列（不再混在倍率/能力徽标里）：异常三档显示徽标，idle/normal
-  // 显示「正常」，暂无数据显示 —；筛选见 mdBusy。
-  const state = BUSY_WORDS[m.busy]
-    ? '<span class="tag ' + ((m.busy === 'congested' || m.busy === 'unavailable') ? 'bad' : 'warn') + '" title="上游繁忙度 ' + esc(m.busy) + '（/v2/chat/busy 实时；服务端偶发无数据，同一批重查可能变）">' + BUSY_WORDS[m.busy] + '</span>'
-    : m.busy ? '<span style="color:var(--ink-3)">正常</span>'
-    : '<span style="color:var(--ink-3)">—</span>';
+  // 拥堵状态独立成列（放在「支持的思考档位」后）：官方 busy_level 共 5 档——
+  // idle/normal=正常(绿) · busy=繁忙(黄) · congested=拥堵(橙) · unavailable=不可用(红)；
+  // unknown/暂无数据显示 —（灰）。颜色按拥堵程度递进，便于扫一眼找可用模型。
+  const state = (m.busy === 'idle' || m.busy === 'normal')
+    ? '<span class="tag ok">正常</span>'
+    : BUSY_WORDS[m.busy]
+    ? '<span class="tag ' + (m.busy === 'congested' ? 'mid' : m.busy === 'unavailable' ? 'bad' : 'warn') + '" title="上游繁忙度 ' + esc(m.busy) + '（/v2/chat/busy 实时；服务端偶发无数据，同一批重查可能变）">' + BUSY_WORDS[m.busy] + '</span>'
+    : '<span class="tag mute">—</span>';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
   return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
-    '<td>' + state + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
-    '<td>' + (m.default_effort && !m.image_generation ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
+    '<td class="c">' + (m.default_effort && !m.image_generation ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
-    '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
+    '<td class="c">' + state + '</td>' +
+    '<td class="num c">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
     outCell(m, pr) + '</tr>';
 }
 

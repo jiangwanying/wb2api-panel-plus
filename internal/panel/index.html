@@ -223,6 +223,9 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 档位标签列：允许换行在标签之间（不拆字），并给足最小宽度 */
 .acc .efs { min-width: 150px; }
 .acc .efs .tag { margin: 1px 0; }
+  /* 标签类列（默认档/思考档位/状态）表头与内容一起居中：胶囊自带内边距，
+     左对齐时文字起点比表头偏右，视觉上永远对不齐——居中是最稳的解法。 */
+  .acc th.c, .acc td.c { text-align: center; }
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
 .acc.md { min-width: 700px; }
 .acc.md th, .acc.md td { padding: 10px 9px; }
@@ -271,6 +274,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .tag.ok { background: var(--ok-soft); color: var(--ok); }
 .tag.warn { background: var(--warn-soft); color: var(--warn); }
 .tag.bad { background: var(--bad-soft); color: var(--bad); }
+.tag.mid { background: rgba(255,145,32,.16); color: #e58a1f; }  /* 拥堵：橙，介于繁忙(黄)与不可用(红) */
 .tag.mute { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--line); }
 .md-avail { flex: none; padding: 0 6px; font-size: 10.5px; line-height: 16px; }
 .rate-limits { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; min-width: 210px; }
@@ -889,7 +893,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         </div>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>状态</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th class="c">默认档</th><th>支持的思考档位</th><th class="c">状态</th><th class="c">上下文长度</th><th class="c">最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
