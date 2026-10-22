@@ -3142,40 +3142,30 @@ function renderExpirySnapshot(d) {
     const ay = String(y.a.nickname || y.a.uid || '');
     return ax < ay ? -1 : ax > ay ? 1 : 0;
   });
-  const EXP_HEAD = 3;  // 默认只展开最近到期的 3 个账号，其余收纳成一行
-  const rowOf = ({ a, bs }, hidden) => {
+  // 旧版卡片布局：每账号一行（色点=危险度），后续批次用小字跟在后面；
+  // 不再把十几个批次塞进表格单元格（旧实现行高被撑到四五倍，可读性差）。
+  const html = rows.map(({ a, bs }) => {
+    const name = a.nickname || String(a.uid || '').slice(0, 8);
     const first = bs[0];
     const days = expDayDiff(first.date);
     const daily = Math.ceil(first.remain / Math.max(1, days));
     const week = bs.filter(b => expDayDiff(b.date) <= 7).reduce((s, b) => s + b.remain, 0);
-    const color = days <= 3 ? 'var(--bad)' : days <= 7 ? 'var(--warn)' : 'var(--ok)';
-    // 只展示「最早一批 + 批次概况」：把十几个批次的日期串铺在单元格里会把行高撑到
-    // 四五倍，且「随后 …」逐条重复更难读。完整逐包明细放「积分构成」页，这里用
-    // title 提供悬停查看。
-    const total = bs.reduce((s, b) => s + b.remain, 0);
-    const detail = bs.map(b => b.date.slice(5) + ' ' + fmtTok(b.remain)).join('；');
-    const parts = ['共 ' + bs.length + ' 批', '合计 ' + fmtTok(total)];
-    if (week > first.remain) parts.push('7 天内 ' + fmtTok(week));
-    const sub = bs.length > 1 ? '<div class="note">' + parts.join(' · ') + '</div>' : '';
-    return '<tr' + (hidden ? ' data-exp-row="rest" hidden' : '') + '>' +
-      '<td>' + esc(a.nickname || String(a.uid || '').slice(0, 8)) + '</td>' +
-      '<td title="' + esc(detail) + '">' + esc(first.date) + sub + '</td>' +
-      '<td class="num" style="color:' + color + '">' +
-        (days === 0 ? '今天' : days === 1 ? '明天' : days + ' 天') + '</td>' +
-      '<td class="num">' + fmtTok(first.remain) + '</td>' +
-      '<td class="num">' + fmtTok(daily) + '</td>' +
-      '</tr>';
-  };
-  // 收纳行沿用「积分构成」页的分组行样式（pk-group-summary / pk-group-toggle）。
-  const rest = rows.slice(EXP_HEAD);
-  $('expBody').innerHTML = !rows.length ? '<tr><td colspan="5">暂无未来到期批次</td></tr>'
-    : rows.slice(0, EXP_HEAD).map(r => rowOf(r, false)).join('') +
-      (rest.length ? '<tr class="pk-group-summary"><td colspan="5">' +
-        '<button type="button" class="pk-group-toggle" data-exp-rest="' + rest.length +
-        '" aria-expanded="false">其余 ' + rest.length + ' 个账号，展开</button></td></tr>' +
-        rest.map(r => rowOf(r, true)).join('') : '');
-  // 重建 tbody 后恢复用户上次的展开选择（否则下一轮 5s 轮询会把展开收回）。
-  applyRestToggle($('expBody'), restOpen.expBody);
+    // 危险度：≤3 天红（不抓紧就真没了）、≤7 天琥珀、更远绿。
+    const cls = days <= 3 ? 'var(--bad)' : days <= 7 ? 'var(--warn)' : 'var(--ok)';
+    const dayWord = days === 0 ? '今天到期' : days === 1 ? '明天到期' : days + ' 天后到期';
+    const more = bs.length > 4 ? '　等 ' + bs.length + ' 批' : '';
+    const rest = bs.slice(1, 4).map(b =>
+      '随后 ' + esc(b.date.slice(5)) + ' · ' + fmtTok(b.remain)).join('　') + more;
+    return '<div class="exp-row"><span class="exp-dot" style="background:' + cls + '"></span>' +
+      '<span class="exp-nm">' + esc(name) + '</span>' +
+      '<span class="exp-main">最近到期 <b>' + esc(first.date) + '</b>（' + dayWord +
+      '）· 该批 <b>' + fmtTok(first.remain) + '</b> 积分 · 到期前日均需耗 ≥<b>' +
+      fmtTok(daily) + '</b>' +
+      (week > first.remain ? ' · 7 天内合计 ' + fmtTok(week) : '') +
+      (rest ? '<div class="note">' + rest + '</div>' : '') +
+      '</span></div>';
+  }).join('');
+  $('expList').innerHTML = html || '<div class="empty">没有账号</div>';
   // 数据节奏透明化：界面 5 秒轮询，但卡片只随余额后台刷新更新（默认每 5 分钟）。
   const iv = Number(d && d.balance_refresh_sec) || 0;
   const at = d && d.balance_refreshed_at ? new Date(d.balance_refreshed_at).getTime() : 0;
@@ -3218,7 +3208,6 @@ function bindRestToggle(id) {
     applyRestToggle(body, next);
   });
 }
-bindRestToggle('expBody');
 bindRestToggle('compBody');
 
 /* ── 精简 QR 编码器（券码二维码用）────────────────────────────────────
@@ -3669,6 +3658,19 @@ function saveRemarkForm() {
   else if (view === 'usage' && usageData) renderUsage(usageData);
   toast('备注已保存（仅本机浏览器）');
 }
+if ($('btnAccExport')) $('btnAccExport').onclick = async () => {
+  if (!confirm('导出文件包含全部账号的访问/刷新凭证明文，请妥善保管（不要分享、不要提交进仓库）。继续导出？')) return;
+  try {
+    const d = await api('accounts/export');
+    const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'wb2api-accounts-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '') + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('已导出 ' + (d.count || 0) + ' 个账号');
+  } catch (e) { toast('导出失败：' + (e && e.message || e)); }
+};
 if ($('btnRemarks')) $('btnRemarks').onclick = openRemarks;
 if ($('btnRemarkClose')) $('btnRemarkClose').onclick = closeRemarks;
 if ($('btnRemarkClear')) $('btnRemarkClear').onclick = () => { storeRemarks({}); renderRemarkBody(); };
