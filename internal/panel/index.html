@@ -710,7 +710,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 
       <!-- 到期提醒：数据取 /overview 的 credits_expiry_buckets（签到与余额后台刷新
            按自然日聚合后写入 state.json），打开页面零上游请求。同日多个包合并为一行，
-           后续批次在日期下方列出；完整逐包明细在「积分构成」页。 -->
+           单元格只给「最早到期 + 批次概况」，完整逐包明细在「积分构成」页。 -->
       <div class="box">
         <header>
           <h3>积分到期提醒 <span class="hint">按自然日聚合 · 日均需耗 = 该日到期积分 ÷ 距到期天数 · 上游按失效时刻先后自动优先扣减（FEFO）</span></h3>
@@ -720,7 +720,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="tbl-wrap">
         <table class="acc">
           <thead><tr>
-            <th>账号</th><th>最近到期</th><th class="num">距到期</th>
+            <th>账号</th><th>最早到期</th><th class="num">距到期</th>
             <th class="num">该日到期</th><th class="num">日均需耗</th>
           </tr></thead>
           <tbody id="expBody"></tbody>
