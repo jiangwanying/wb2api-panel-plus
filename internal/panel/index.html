@@ -854,6 +854,13 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <option value="reasoning">支持思考</option>
             <option value="default">默认模型</option>
           </select>
+          <select id="mdBusy" aria-label="按拥堵状态筛选">
+            <option value="">全部状态</option>
+            <option value="ok">正常</option>
+            <option value="busy">繁忙</option>
+            <option value="congested">拥堵</option>
+            <option value="unavailable">不可用</option>
+          </select>
           <select id="mdEffort" aria-label="按思考档位筛选">
             <option value="">全部档位</option>
             <option value="off">可关闭思考</option>
@@ -882,7 +889,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         </div>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>状态</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
