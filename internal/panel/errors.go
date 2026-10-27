@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
 )
 
 // ErrStat 单条「账号 × 错误类型」聚合行。
@@ -26,8 +26,17 @@ type ErrStat struct {
 	Last    string `json:"last,omitempty"`   // 最近一次时刻 HH:MM:SS
 	Sev     string `json:"sev"`              // bad | warn | info
 	Until   string `json:"until,omitempty"`  // 模型级限流的解除时刻（上游文案里的重置时间）
-	Sample  string `json:"sample,omitempty"` // 原始样本（rune 截断，供下钻）
+	Sample  string `json:"sample,omitempty"` // 表格正文样本（截断，供一眼认出类别）
+	// SampleFull 与 Sample 同一行原文，只放宽到 sampleFullBytes 供 title 悬停看全文。
+	// 分开两个字段：正文要短才不撑爆表格，而 160B 常把上游 body 的 msg 切掉一半
+	// （issue #61：悬停也看不到剩下的，因为 title 原先复用了已截断的 Sample）。
+	SampleFull string `json:"sample_full,omitempty"`
 }
+
+const (
+	sampleBytes     = 160  // 表格正文上限
+	sampleFullBytes = 1024 // title 全文上限：够装上游 body JSON，又不让 5s 轮询载荷失控
+)
 
 const (
 	sevBad  = "bad"  // 需处理：限流/额度/会话失效/WAF/传输失败
@@ -197,7 +206,8 @@ func AggregateErrors(lines []LogLine) []ErrStat {
 		st, ok := agg[k]
 		if !ok {
 			st = &ErrStat{Account: acct, Kind: kind, Code: code, Model: model,
-				Sev: sev, Sample: logfmt.Truncate(txt, 160)}
+				Sev: sev, Sample: logfmt.Truncate(txt, sampleBytes),
+				SampleFull: logfmt.Truncate(txt, sampleFullBytes)}
 			agg[k] = st
 			order = append(order, k)
 		}

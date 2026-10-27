@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 func TestPrepareBodyForcesStream(t *testing.T) {
@@ -797,6 +797,32 @@ func TestStreamEmptyFramesCase(t *testing.T) {
 				t.Errorf("error frame absent or error field stripped: %q", body)
 			}
 		})
+	}
+}
+
+// TestStreamHeadVetoEmbeddedCodeFrame 首帧即「HTTP 200 内嵌顶层 {code,msg}」失败帧
+// （11140 安全审核 / 6021 队列满等形态，writeFrame 的 StreamErrorFrame 判据）：
+// 与 error 键形态同样在首帧否决窗口换号，客户端不会看到「200 + error 帧」。
+// 否决 payload 已改写成标准 error 帧（与 writeFrame 的透出形态一致），FrameKind
+// 可直接分类、requestId 不丢。
+func TestStreamHeadVetoEmbeddedCodeFrame(t *testing.T) {
+	const frame = `{"code":11140,"msg":"request illegal","requestId":"req-1"}`
+	rec := httptest.NewRecorder()
+	err := Stream(rec, strings.NewReader("data: "+frame+"\n\ndata: [DONE]\n\n"))
+	var hv *HeadVetoError
+	if !errors.As(err, &hv) {
+		t.Fatalf("err=%v want *HeadVetoError", err)
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(hv.Payload), &obj) != nil {
+		t.Fatalf("payload 应已改写为标准 error 帧: %q", hv.Payload)
+	}
+	e, _ := obj["error"].(map[string]any)
+	if e == nil || e["message"] != "request illegal" || e["code"] != float64(11140) || e["requestId"] != "req-1" {
+		t.Fatalf("error 帧字段丢失: %q", hv.Payload)
+	}
+	if body := rec.Body.String(); body != "" {
+		t.Fatalf("首帧否决必须零字节写出，实际：%q", body)
 	}
 }
 

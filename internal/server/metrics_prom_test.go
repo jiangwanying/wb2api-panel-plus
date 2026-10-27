@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // 指标口径：pool_state{state="disabled"} = 禁用 + 暂停选号（吸收上游 PR #130 时 RealmHealth

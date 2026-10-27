@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
 )
 
 // cstDay 上游自然日（CST）日键，口径统一在 internal/cst。

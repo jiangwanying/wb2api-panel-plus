@@ -46,6 +46,7 @@ const ctx = {
   api: (p) => apiImpl(p),
   loginState: 'st1',
   loginTimer: 7,
+  loginStartAt: 0,
 };
 vm.createContext(ctx);
 vm.runInContext(src.slice(start, end) + '\nthis.pollLogin = pollLogin; this.getFails = () => pollFails; this.getTimer = () => loginTimer;', ctx);
@@ -70,6 +71,14 @@ const out = {};
   await ctx.pollLogin();
   out.invalidated = invalidated;
   out.doneText = els['addDone'].textContent;
+
+  // 4) pending 超过 90s：浏览器侧可能已报「登录失败」，面板不能一直无声等待。
+  els['addErr'].hidden = true;
+  apiImpl = async () => ({ done: false, message: 'code=11217 msg=login ing...' });
+  ctx.loginStartAt = Date.now() - 95000;
+  await ctx.pollLogin();
+  out.slowHintShown = !els['addErr'].hidden;
+  out.slowHintText = els['addErr'].textContent;
   process.stdout.write(JSON.stringify(out));
 })();`
 	f, err := os.CreateTemp(t.TempDir(), "poll-login-*.cjs")
@@ -92,6 +101,8 @@ const out = {};
 		TerminalText        string `json:"terminalText"`
 		Invalidated         int    `json:"invalidated"`
 		DoneText            string `json:"doneText"`
+		SlowHintShown       bool   `json:"slowHintShown"`
+		SlowHintText        string `json:"slowHintText"`
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("bad output: %v\n%s", err, out)
@@ -113,6 +124,9 @@ const out = {};
 	}
 	if !strings.Contains(got.DoneText, "余额校验失败") {
 		t.Errorf("余额校验失败必须回显（否则「已添加但一直 401」是静默失败）：%q", got.DoneText)
+	}
+	if !got.SlowHintShown || !strings.Contains(got.SlowHintText, "重新获取授权链接") {
+		t.Errorf("pending 超时后应提示可操作的重试步骤（浏览器报「登录失败」时面板否则无声干等）：%+v", got)
 	}
 }
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/usage"
 )
 
 // 积分进入用量记录的端到端链路：上游 usage.credit → 记录器桶 → 面板聚合。

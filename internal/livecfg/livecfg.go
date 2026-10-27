@@ -21,7 +21,17 @@ type Snapshot struct {
 	SanitizeFingerprints bool                // 出站请求体指纹脱敏
 	RecordClientInfo     bool                // 请求日志是否记录调用来源（客户端 IP / UA）
 	HiddenModels         map[string]struct{} // 精确隐藏的模型 id（已归一化为 "cn:x"/"global:x" 全量形式）；nil = 不隐藏
-	ModelAliases         map[string]string   // 客户端名 → 真实模型名（键已归一化小写；"cn:x"/"global:x" 前缀键只在该域生效，裸名键两域都生效）；nil = 不映射。issue #30
+	// AllowedModels 模型白名单（config models.allowed，issue #68）：已归一化为
+	// "cn:x"/"global:x" 全量形式的精确 id 集合；nil = 未启用（默认放行所有模型）。
+	// 与 HiddenModels 完全对称：Hidden 是「可见集合再剔除」，Allowed 是「可能可见」集合。
+	AllowedModels map[string]struct{}
+	// AllowlistEnabled 白名单是否启用（归一化结果非空即启用）；false = 全部放行。
+	AllowlistEnabled bool
+	ModelAliases     map[string]string // 客户端名 → 真实模型名（键已归一化小写；"cn:x"/"global:x" 前缀键只在该域生效，裸名键两域都生效）；nil = 不映射。issue #30
+	// ModelFallback 模型降级路由表（pool.model_fallback）：6004 模型级限流时改用
+	// 的等价模型（裸名 → 裸名）。nil = 不降级。与 aliases 的区别：aliases 是
+	// 「客户端名→真实名」的静态映射，本表是「限流时的临时改道」，且不写持久状态。
+	ModelFallback map[string]string
 }
 
 // NormalizeModelAliases 把用户配置的 aliases 条目（"客户端名=真实模型名"）归一化为查找表。
@@ -116,4 +126,33 @@ func NormalizeHiddenModels(hidden []string) map[string]struct{} {
 		return nil
 	}
 	return out
+}
+
+// NormalizeAllowedModels 把用户配置的 allowed 条目归一化为精确 id 集合。
+//
+// 条目语法与 NormalizeHiddenModels 完全一致：带合法 "cn:"/"global:" 前缀 →
+// 只在该域允许；裸名 → 两域都允许。大小写敏感。返回 enabled 表示白名单是否
+// 启用：入参为空或全部为无效条目（Trim 后为空）→ false，调用方据此走
+// 「默认放行所有模型」的向后兼容路径。返回的 map 只读共享，调用方不得修改。
+func NormalizeAllowedModels(in []string) (map[string]struct{}, bool) {
+	if len(in) == 0 {
+		return nil, false
+	}
+	out := make(map[string]struct{}, len(in)*2)
+	for _, m := range in {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		if prefix, bare, ok := strings.Cut(m, ":"); ok && (prefix == "cn" || prefix == "global") {
+			out[prefix+":"+bare] = struct{}{}
+		} else {
+			out["cn:"+m] = struct{}{}
+			out["global:"+m] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }

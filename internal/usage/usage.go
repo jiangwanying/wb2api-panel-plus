@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
 )
 
 // hourlyKeep 小时桶的保留时长；超出后折叠为日桶。
@@ -94,6 +94,11 @@ type Recorder struct {
 	buckets map[string]*bucket // key: scope|realm|uid|model|rate
 	dirty   bool
 	started time.Time
+
+	// 落盘失败观测（进 Snapshot，面板可见「用量文件已 N 轮没写成功」）：
+	// 失败计数 + 最近一次错误。dirty 在失败后立即置回 true，等下个 tick 重试。
+	lastErr       string
+	failedFlushes int
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -355,16 +360,28 @@ func (r *Recorder) flush(force bool) {
 
 	raw, err := json.Marshal(snap)
 	if err != nil {
-		log.Printf("[usage] 序列化失败: %v", err)
+		r.noteFlushFailure("序列化失败", err)
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
-		log.Printf("[usage] 建目录失败: %v", err)
+		r.noteFlushFailure("建目录失败", err)
 		return
 	}
 	if err := safefile.WriteKeep(r.path, raw, 0o600); err != nil {
-		log.Printf("[usage] 原子替换失败: %v", err)
+		r.noteFlushFailure("原子替换失败", err)
 	}
+}
+
+// noteFlushFailure 记一次落盘失败并恢复 dirty：此前 dirty 在写盘前就被清掉且
+// 失败不恢复——若无新请求进来，后续每轮 flush 都直接跳过，改动只能等下一次
+// Add 或进程退出兜底，期间进程崩溃即丢一个防抖周期的数据。
+func (r *Recorder) noteFlushFailure(stage string, err error) {
+	log.Printf("[usage] %s: %v", stage, err)
+	r.mu.Lock()
+	r.dirty = true
+	r.lastErr = stage + ": " + err.Error()
+	r.failedFlushes++
+	r.mu.Unlock()
 }
 
 // Save 立即落盘（面板「刷新」或关闭前调用）。
@@ -508,6 +525,10 @@ type Snapshot struct {
 	Buckets         int         `json:"buckets"`
 	FileBytes       int64       `json:"file_bytes"`
 	Since           string      `json:"since,omitempty"`
+	// LastError/FailedFlushes 落盘健康观测：失败计数与最近一次错误（面板可显示
+	// 「用量文件已 N 轮没写成功」）；零值省略，健康时不出现。
+	LastError     string `json:"last_error,omitempty"`
+	FailedFlushes int    `json:"failed_flushes,omitempty"`
 	// WindowFrom/WindowTo 本次实际生效的统计区间（本地时间，RFC3339），供面板
 	// 回显口径——「自定义」区间下用户必须能确认服务端到底按哪段算的。
 	// 空串 = 该侧不设界（全部历史 / 到今天为止）。
@@ -595,6 +616,7 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 	for _, b := range r.buckets {
 		bs = append(bs, *b)
 	}
+	lastErr, failedFlushes := r.lastErr, r.failedFlushes
 	r.mu.Unlock()
 
 	var total aggAcc
@@ -716,6 +738,8 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 		CreditByModel:   creditKeyed(creditModelAgg),
 		Buckets:         matched,
 		Generated:       time.Now().Format(time.RFC3339),
+		LastError:       lastErr,
+		FailedFlushes:   failedFlushes,
 	}
 	for i := range snap.ByAccount {
 		snap.ByAccount[i].Realm = acctRealm[snap.ByAccount[i].Key]

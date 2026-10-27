@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/linguo2625469/workbuddy2api-panel/internal/alert"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/alert"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/server"
 )
 
 // realmAwareAvailableForModel 构造会话粘性路由按模型可用口径的 realm 感知闭包。

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/session"
 )
 
 // extractCacheKey 从改写后的 body 里取出 prompt_cache_key 字段值。
@@ -278,7 +278,7 @@ func TestPrepareBodyCacheKeyEquivalence(t *testing.T) {
 	for _, in := range bodies {
 		t.Run(in, func(t *testing.T) {
 			oldBody := InjectPromptCacheKey(PrepareBodyOpt([]byte(in), false), uid, conv)
-			newBody, _, _ := prepareBodyOpt([]byte(in), false, nil, nil, nil, uid, conv, true)
+			newBody, _, _ := prepareBodyOpt([]byte(in), false, true, nil, nil, nil, uid, conv, true)
 			if !bytes.Equal(oldBody, newBody) {
 				t.Fatalf("body mismatch\nold=%s\nnew=%s", oldBody, newBody)
 			}

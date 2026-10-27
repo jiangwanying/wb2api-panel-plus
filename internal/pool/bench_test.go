@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 本文件为 P 组性能审查的量化基准（go test -bench 可复现），结论见 REVIEW-conflicts-perf.md。

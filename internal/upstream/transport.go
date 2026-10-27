@@ -143,12 +143,6 @@ func newTransport() *http.Transport {
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: responseHeaderTimeout,
-		// 出站代理（issue #223）：走标准库的 ProxyFromEnvironment，读 HTTPS_PROXY /
-		// HTTP_PROXY / NO_PROXY（大小写两套都认）。未设置代理时与不配该字段行为一致，
-		// 零回归；配上代理后所有上游请求（含 SSE 长流）经代理 CONNECT 出站，可用于
-		// 更换出口 IP / 穿透受限网络。注意代理地址由本字段解析，不走 newDialer 的
-		// 自定义 DNS——代理主机名仍由 Go 默认解析器处理。
-		Proxy: http.ProxyFromEnvironment,
 	}
 }
 

@@ -10,8 +10,8 @@ import (
 	"encoding/json"
 	"log"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
 )
 
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。

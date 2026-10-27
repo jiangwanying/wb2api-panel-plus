@@ -202,6 +202,8 @@ func TestErrorSummaryEndpoint(t *testing.T) {
 }
 
 // 截断必须按 rune（中文样本不得切出半截 UTF-8）；且样本里换行被压平。
+// 另：sample_full 必须比 sample 长且同样 rune 安全——表格正文与 title 悬停看全文
+// 是两个字段（issue #61），title 复用已截断的 sample 会让悬停等于没有。
 func TestAggregateErrorsSampleIsRuneSafe(t *testing.T) {
 	line := "WARN: [upstream] chat_stream acct=a1b2c3d4: upstream 400 content_blocked body={\"msg\":\"" +
 		strings.Repeat("您的使用量已超出频率限制，请稍后再试。", 20) + "\"}"
@@ -212,6 +214,18 @@ func TestAggregateErrorsSampleIsRuneSafe(t *testing.T) {
 	for i, r := range got[0].Sample {
 		if r == '\uFFFD' {
 			t.Fatalf("样本出现非法 UTF-8（第 %d 字节）：%q", i, got[0].Sample)
+		}
+	}
+	if len(got[0].SampleFull) <= len(got[0].Sample) {
+		t.Fatalf("sample_full 应比 sample 长（悬停才看得到全文）：sample=%d full=%d",
+			len(got[0].Sample), len(got[0].SampleFull))
+	}
+	if len(got[0].SampleFull) > sampleFullBytes {
+		t.Fatalf("sample_full 超过上限 %d：%d", sampleFullBytes, len(got[0].SampleFull))
+	}
+	for i, r := range got[0].SampleFull {
+		if r == '\uFFFD' {
+			t.Fatalf("全文样本出现非法 UTF-8（第 %d 字节）：%q", i, got[0].SampleFull)
 		}
 	}
 }

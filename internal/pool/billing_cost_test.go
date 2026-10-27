@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 移植上游 PR #104：小数积分保留 + 零成本观测可信标记。

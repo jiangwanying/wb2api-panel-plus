@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // schedFor 只让 cfg 显式配了小时数的那几类参与：New 会给未配的补默认整点
@@ -105,8 +105,13 @@ func TestRunCatchesUpMissedSlots(t *testing.T) {
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999})
 	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
 
-	// 取「今天已经过去」的整点：now 的上一小时（00:xx 时取 0 点，其 00:00 也已过）。
-	past := time.Now().Hour() - 1
+	// 取「今天已经过去」的整点：CST 当前的上一小时（CST 00:xx 时取 0 点，其 00:00 也已过）。
+	//
+	// 必须用 cst.Now() 取小时：排程把小时数解释成 CST 时点（nextFireKind 用 cst.Loc），
+	// 而 CI runner 在 UTC。用宿主的 time.Now().Hour() 时，UTC 16:00–23:59 期间取到的
+	// 小时在 CST 是「今天还没到」，missedToday 判不出补跑，断言必然失败
+	// （binaries #317 实测：UTC 16:13 失败，此前所有 run 都在 15:42 UTC 之前）。
+	past := cst.Now().Hour() - 1
 	if past < 0 {
 		past = 0
 	}
@@ -416,6 +421,38 @@ func TestRunKeepaliveRefreshesTokens(t *testing.T) {
 	}
 }
 
+// TestRunKeepaliveRefreshDeadButAccessTokenAlive 刷新恒回 12153、但 access token
+// 仍远未过期 → 不计 session dead，永远不会禁用（issue #83）。
+//
+// 生产实测依据：29 个账号里 4 个 refresh 恒 12153，AT 还剩 26~333 天，chat 全 200。
+// 旧行为会在连续 3 轮保活后把这种健康号禁用，面板一片橙色。
+func TestRunKeepaliveRefreshDeadButAccessTokenAlive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"code":12153,"msg":"12153:refresh token failed:400 Bad Request: invalid_grant: Session doesn't have required client"}`))
+	}))
+	defer srv.Close()
+
+	p := pool.New("")
+	a := &auth.Auth{UID: "u1", AccessToken: "old", RefreshToken: "rt",
+		ExpiresAt: time.Now().Add(26 * 24 * time.Hour).Unix()}
+	p.Add(a)
+
+	up := &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	s := New(Config{Pool: p, Upstream: up})
+
+	for i := 0; i < pool.SessionDeadThreshold()+2; i++ {
+		s.RunKeepaliveNow()
+	}
+	st, _ := p.Status("u1")
+	if st.Disabled {
+		t.Fatalf("AT 仍有效时不该禁用（refresh 死 ≠ 账号死）: %+v", st)
+	}
+	if st.SessionDeadFails != 0 {
+		t.Errorf("session dead 计数=%d want 0", st.SessionDeadFails)
+	}
+}
+
 func TestRunKeepaliveSessionDeadDisables(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
@@ -483,6 +520,11 @@ func TestRunKeepaliveSessionDeadResetBySuccess(t *testing.T) {
 		t.Fatalf("precondition: 前 2 次不应禁用: %+v", st)
 	}
 	s.RunKeepaliveNow() // 刷新成功 → 清计数
+	// 刷新成功后 AT 有效期 1h，按 issue #83 判据这期间不累计（号确实能用）。
+	// 这里把 AT 重新标为已过期，模拟「新 token 也过期了」的下一轮，继续验计数语义。
+	a.Lock()
+	a.ExpiresAt = 1
+	a.Unlock()
 	// 接下来连续 2 次 12153：从新计数重新算，仍不应禁用（历史计数已清）。
 	s.RunKeepaliveNow() // 12153 #1（新计数）
 	s.RunKeepaliveNow() // 12153 #2（新计数）
@@ -814,4 +856,15 @@ func TestBlackcatEligibility(t *testing.T) {
 			t.Errorf("%s: blackcatEligible=%v want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// TestMissedSlotsIsHostTimezoneIndependent 把 time.Local 换成 UTC 再跑一遍启动补跑
+// 断言：排程的小时数按 CST 解释，CI runner 在 UTC，用宿主时钟取「上一小时」时
+// UTC 16:00 之后那个时点在 CST 还是未来，补跑不触发（binaries #317 实测）。
+// 钉住「取当前时刻必须走 cst.Now()」。
+func TestMissedSlotsIsHostTimezoneIndependent(t *testing.T) {
+	old := time.Local
+	time.Local = time.UTC
+	defer func() { time.Local = old }()
+	TestRunCatchesUpMissedSlots(t)
 }

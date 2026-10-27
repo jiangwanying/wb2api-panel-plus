@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // schoolBase 开学季活动域基础路径（拼在 billingBase 之后）。

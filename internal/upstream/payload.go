@@ -66,7 +66,7 @@ func normalizeModelName(obj map[string]any) {
 // 导出入口不注入 prompt_cache_key（保持既有公开语义）；生产路径由
 // client.prepareBody 调用 prepareBodyOpt 并传入 cache 参数。
 func PrepareBodyOptWithEffortsDefaultAndCaps(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64) ([]byte, string) {
-	body, _, eff := prepareBodyOpt(src, sanitize, efforts, defaultEfforts, maxOut, "", "", false)
+	body, _, eff := prepareBodyOpt(src, sanitize, true, efforts, defaultEfforts, maxOut, "", "", false)
 	return body, eff
 }
 
@@ -77,7 +77,7 @@ func PrepareBodyOptWithEffortsDefaultAndCaps(src []byte, sanitize bool, efforts 
 //   - requested 在 injectThinking 之前抓取，因此不含网关补的默认档——它回答
 //     「客户端到底发没发、发的哪一档」（issue #43/#18 的判别依据）；
 //   - effective 是降级后的出站档位，未携带/未知模型/未知档位 → ""。
-func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64, cacheUID, cacheConversation string, injectCache bool) ([]byte, string, string) {
+func prepareBodyOpt(src []byte, sanitize, brandGlobal bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64, cacheUID, cacheConversation string, injectCache bool) ([]byte, string, string) {
 	if len(src) == 0 {
 		return src, "", ""
 	}
@@ -142,7 +142,7 @@ func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defa
 	backfillReasoningContent(obj)
 	if sanitize {
 		if msgs, ok := obj["messages"].([]any); ok {
-			sanitizeMessages(msgs)
+			sanitizeMessages(msgs, brandGlobal)
 		}
 	}
 	// prompt_cache_key：与 body 改写共用同一次 map，避免再 Unmarshal/Marshal 一遍。
@@ -279,6 +279,15 @@ func normalizeReasoningEffort(obj map[string]any, efforts map[string][]string, d
 	}
 	model, _ := obj["model"].(string)
 	if model == "" {
+		return ""
+	}
+	// off/none 是「关闭思考」的表达，不是可降级的档位。没有模型声明 off 档位
+	// （effortRank 里 rank 0 的 off 只是排序占位），不截住就会被就近降级成最弱
+	// 正档——客户端要关闭，网关却给它开了最弱的思考（实测 glm 变 low）。
+	// deepseek 的关闭形态由 injectThinking 写成 thinking.type=disabled。
+	if effortValueOff(obj) {
+		delete(obj, "reasoning_effort")
+		delete(obj, "reasoningEffort")
 		return ""
 	}
 	supported, ok := efforts[model]

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestClaimRewardWebEndpoint 领奖走 Web 域（workbuddy.cn）、任务码在路径里、无 body。

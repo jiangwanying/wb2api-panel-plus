@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // sample 是单次请求观测到的用量与缓存字段。

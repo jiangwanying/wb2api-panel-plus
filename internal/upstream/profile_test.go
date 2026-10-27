@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 func TestFetchAccountProfile(t *testing.T) {

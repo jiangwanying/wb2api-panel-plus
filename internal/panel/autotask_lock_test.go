@@ -3,7 +3,7 @@ package panel
 import (
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // TestTaskAccountLockSameAccountExclusive 同一账号的任务锁互斥：第二次 tryLock 必须失败，

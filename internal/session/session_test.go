@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/redisstore"
 )
 
 // countingStore 记录镜像调用次数的假 Store（不联网）。

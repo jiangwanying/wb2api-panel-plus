@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // degradeReason 连败降权（issue #114）写 reason 的固定文案：与冷却域的
@@ -125,6 +125,9 @@ type Status struct {
 	APIKey         bool   `json:"api_key,omitempty"`
 	Disabled       bool   `json:"disabled"`
 	DisabledReason string `json:"disabled_reason,omitempty"` // 仅 disabled 账号：禁用原因（运维可见）
+	// DisabledAt 禁用时刻（RFC3339；零值省略）。补上「何时」这一维：
+	// 只看原因分不清「刚被禁」和「禁了一周没人管」，而两者处置优先级差很远。
+	DisabledAt string `json:"disabled_at,omitempty"`
 	// Paused 暂停选号：退出选号候选（与 disabled 一样不参与选号），但**照常参与**
 	// 签到 / 活跃上报 / 保活 / 余额刷新四类保号任务。与 disabled 正交——disabled 是
 	// 「授权/session 终态，需人工 revive」，paused 是「运维临时让位」（多号轮换场景），
@@ -251,9 +254,12 @@ type entry struct {
 	// paused 暂停选号：与 disabled 正交。置位后退出选号候选（healthy 判否），
 	// 但保号任务遍历只按 Disabled 过滤，故 paused 号天然继续参与签到 / 活跃上报 /
 	// 保活 / 余额刷新。持久化（state.json），跨重启不丢。
-	paused   bool
-	reason   string
-	lastUsed time.Time // 最近被选中时刻（防并发撞号）
+	paused bool
+	reason string
+	// disabledAt 禁用时刻（零值 = 未禁用）。与 reason 配对：运维需要知道
+	// 「什么时候被禁的」——同样一句 401，是刚刚发生还是挂了一周，处置完全不同。
+	disabledAt time.Time
+	lastUsed   time.Time // 最近被选中时刻（防并发撞号）
 	// usedSeq 单调递增的选中序号：每次被 pick 选中时取 p.pickSeq 自增值。
 	// Windows 等平台 time.Now() 精度有限（~0.5ms），高并发/快速连续选号时多个
 	// 账号 lastUsed 完全相等，基于 wall-clock 的 LRU/防惊群判定失效。
@@ -276,6 +282,12 @@ type entry struct {
 	// 单 until 字段做不到的）。仅 6004 触发时记录；空 map = 无模型级限流（不豁免）。
 	// 运行态语义（不持久化）：重启清零，退化为仅账号级 until 冷却的现状。
 	modelCooldowns map[string]modelCooldown
+
+	// modelOff 手动关闭的「(账号, 模型)」组合（稀疏：只为"被关掉"的组合建条目）。
+	// 与 modelCooldowns 的区别：那是**上游触发、临时**（过期自动删）；这是**运维触发、
+	// 永久**（仅手动解）。手动优先 —— 见 toggle.go 的说明。
+	// 持久化：stateAccount.ModelOff，重启不丢（运维意图不该被重启抹掉）。
+	modelOff map[string]modelOff
 	// sessionDeadFails 连续 12153（ErrSessionDead）计数。12153 在真实环境会被临时性触发
 	// （网络抖动/上游闪断/refresh 竞态），一次失败就永久禁用太粗暴——连续达到阈值才判死。
 	// 持久化（stateAccount.SessionDeadFails）：上游持续 session dead 时重启归零会导致
@@ -420,6 +432,12 @@ func (e *entry) healthyForModel(now time.Time, reqModel string) bool {
 	if e.disabled || e.paused {
 		return false
 	}
+	// 手动关闭优先于一切自动机制（运维意图）：手动关掉的组合，即使 11102/6004 冷却
+	// 到期也不能恢复使用 —— 否则"我关了它，一次自动恢复又开了"会让人无法信任这个开关。
+	// 放在最前：早于账号级冷却判断，语义上"这组合本就不该被用"比"暂时冷却"更强。
+	if e.modelOffed(reqModel) {
+		return false
+	}
 	if e.modelCooled(now, reqModel) {
 		// 该模型在 6004 独立冷却中 → 不可选。
 		return false
@@ -510,6 +528,7 @@ type stateAccount struct {
 	Disabled         bool      `json:"disabled"`
 	Paused           bool      `json:"paused,omitempty"`
 	Reason           string    `json:"reason,omitempty"`
+	DisabledAt       time.Time `json:"disabled_at,omitempty"` // 禁用时刻（持久化：重启后仍能看出禁了多久）
 	Until            time.Time `json:"until,omitempty"`
 	CoolKind         CoolKind  `json:"cool_kind"`
 	SuccessCount     int64     `json:"success_count,omitempty"`
@@ -558,6 +577,10 @@ type stateAccount struct {
 	// 跨重启是常态；不持久化会导致 healthyForModel 重启失忆、重新踩雷区。
 	// 恢复时惰性过滤已过期条目。
 	ModelCooldowns map[string]stateModelCooldown `json:"model_cooldowns,omitempty"`
+
+	// ModelOff 手动关闭的「(账号, 模型)」组合（稀疏）。**永久**语义：
+	// 与 model_cooldowns（上游触发、临时）分开存，避免被冷却清理逻辑误删。
+	ModelOff map[string]stateModelOff `json:"model_off,omitempty"`
 	// ModelCosts 实测扣费账本（model → 单价观测，见 entry.modelCost）。持久化
 	// （P1-anti-monopoly）：重启后成本知识保留，限免/夜间免费的跨重启窗口不再
 	// 重新付学费探测。落盘/恢复均按 modelCostTTL 惰性过滤（6h 外不写不恢复——
@@ -573,6 +596,12 @@ type stateModelCooldown struct {
 	ResetAt   time.Time `json:"reset_at,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
 	AuditOnly bool      `json:"audit_only,omitempty"`
+}
+
+// stateModelOff 手动关闭 (账号, 模型) 的持久化记录。
+type stateModelOff struct {
+	Since time.Time `json:"since"`
+	Note  string    `json:"note,omitempty"`
 }
 
 // stateModelCost 单个 (账号, 模型) 的成本观测持久化记录，与运行态 modelCostEntry

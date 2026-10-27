@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
 )
 
 // maxDelta 单次变动的留痕上限（对齐参考实现的 _MAX_DELTA）：超过它基本可断定是

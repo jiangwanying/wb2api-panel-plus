@@ -3,14 +3,12 @@ package panel
 import (
 	"encoding/json"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/credithist"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/credithist"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // creditPanel 构造带积分账本与一个具名账号的面板（鉴权走 test-key）。
@@ -167,47 +165,5 @@ func TestCreditHistoryRequiresAuth(t *testing.T) {
 	p.ServeHTTP(rr, req)
 	if rr.Code != 401 {
 		t.Fatalf("无 key 应回 401，得到 %d", rr.Code)
-	}
-}
-
-// 时间与账号筛选：from/to 为秒级时间戳，闭区间；与 uid 组合时先并集筛选再截断。
-func TestCreditHistoryTimeAndAccountFilter(t *testing.T) {
-	l := credithist.New("", 100)
-	l.Observe("u1", 1000) // 基线不记流水
-	l.Observe("u1", 1100) // +100（唯一一条流水）
-
-	now := time.Now()
-	past := now.Add(-time.Hour).Unix()
-	future := now.Add(time.Hour).Unix()
-
-	cases := []struct {
-		name  string
-		query string
-		want  int
-	}{
-		{"无筛选", "", 1},
-		{"起点在过去", "?from=" + strconv.FormatInt(past, 10), 1},
-		{"起点在未来", "?from=" + strconv.FormatInt(future, 10), 0},
-		{"终点在过去", "?to=" + strconv.FormatInt(past, 10), 0},
-		{"终点在未来", "?to=" + strconv.FormatInt(future, 10), 1},
-		{"区间覆盖", "?from=" + strconv.FormatInt(past, 10) + "&to=" + strconv.FormatInt(future, 10), 1},
-		{"区间不覆盖", "?from=" + strconv.FormatInt(future, 10) + "&to=" + strconv.FormatInt(future+60, 10), 0},
-		{"账号命中", "?uid=u1", 1},
-		{"账号不命中", "?uid=u2", 0},
-		{"账号+时间命中", "?uid=u1&from=" + strconv.FormatInt(past, 10), 1},
-		{"非法时间参数忽略", "?from=abc&to=xyz", 1},
-	}
-	for _, c := range cases {
-		code, body := creditGet(t, creditPanel(t, l), c.query)
-		if code != 200 {
-			t.Fatalf("%s: 状态 %d %s", c.name, code, body)
-		}
-		var out creditResp
-		if err := json.Unmarshal([]byte(body), &out); err != nil {
-			t.Fatalf("%s: JSON 解析失败 %v", c.name, err)
-		}
-		if len(out.Entries) != c.want {
-			t.Fatalf("%s: 条目 %d，期望 %d（%s）", c.name, len(out.Entries), c.want, body)
-		}
 	}
 }

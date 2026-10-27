@@ -26,9 +26,6 @@ var themeJS []byte
 //go:embed app.js
 var appJS []byte
 
-//go:embed mobile.css
-var mobileCSS []byte
-
 // 内容指纹（issue #33）：把脚本 URL 绑到脚本内容上。
 //
 // 为什么需要：面板原先靠 `Cache-Control: no-store` 保证不拿到旧脚本，那是对
@@ -109,14 +106,4 @@ func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(appJS)
-}
-
-// mobileStyle 输出移动端适配样式（≤760px 的 @media 覆盖，独立文件以避免与
-// 主样式混排；同源加载，CSP style-src 'self' 放行）。
-func (p *Panel) mobileStyle(w http.ResponseWriter, r *http.Request) {
-	setSecurityHeaders(w)
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(mobileCSS)
 }

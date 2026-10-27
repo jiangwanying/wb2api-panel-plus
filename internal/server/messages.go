@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/httpauth"
 )
 
 func (h *Handler) withAnthropicAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -27,6 +27,36 @@ func (h *Handler) withAnthropicAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if !httpauth.VerifyBearer(r, h.loadLive().APIKey) {
 			writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "missing or invalid API key")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// withDualAuth 同时接受 Bearer 与 Anthropic 的 x-api-key 两种携带方式。
+//
+// 存在的理由：GET /v1/models 是双协议共用端点。Anthropic 官方 SDK 用 x-api-key
+// 认证（与 POST /v1/messages 一致），OpenAI 系客户端用 Authorization: Bearer；
+// 此前该端点只挂 withAuth，Anthropic 侧的模型发现必然 401——同一份 API Key
+// 能调通 /v1/messages 却列不出模型，属路由挂载的对称性缺失而非设计取舍。
+//
+// 错误形状按请求方选：带 x-api-key 或 anthropic-version 的按 Anthropic 口径回
+// （type: error / error.type: authentication_error），否则维持 OpenAI 口径
+// （error.type: api_error / error.code: invalid_api_key），两类 SDK 都能正确解析。
+func (h *Handler) withDualAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Anthropic 侧：空 Authorization 时把 x-api-key 提升到标准头，复用同一套比较。
+		if r.Header.Get("Authorization") == "" {
+			if k := r.Header.Get("x-api-key"); k != "" {
+				r.Header.Set("Authorization", "Bearer "+k)
+			}
+		}
+		if !httpauth.VerifyBearer(r, h.loadLive().APIKey) {
+			if r.Header.Get("x-api-key") != "" || r.Header.Get("anthropic-version") != "" {
+				writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "missing or invalid API key")
+				return
+			}
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 			return
 		}
 		next(w, r)

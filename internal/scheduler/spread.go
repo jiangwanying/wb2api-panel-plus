@@ -12,7 +12,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // accountSpread 本轮各账号的执行时刻（绝对时间，计划生成时刻为起点）。
@@ -77,6 +78,27 @@ func (a *accountSpread) wait(ctx context.Context, uid string) bool {
 		return true
 	}
 	return sleepCtx(ctx, time.Until(at))
+}
+
+// order 按计划时刻升序返回账号列表；计划为 nil（未启用/手动触发）时原样返回。
+//
+// 遍历必须按计划时刻、而不是 Poll.List() 的 uid 序：uid 序下若排在前面的账号计划
+// 时刻更晚，后面的账号会被逐个堵住，最后挤在同一秒跑完（issue #45 实测 10 个账号
+// 塌缩成 2–3 个执行时刻）。按计划序遍历时每个 wait 都是最后一次，实际时刻 = 计划时刻。
+func (a *accountSpread) order(list []pool.Status) []pool.Status {
+	if a == nil || len(list) == 0 {
+		return list
+	}
+	out := append([]pool.Status(nil), list...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, iok := a.at[out[i].UID]
+		tj, jok := a.at[out[j].UID]
+		if !iok || !jok {
+			return iok && !jok // 不在计划里的账号排到最后（它们本来就不等）
+		}
+		return ti.Before(tj)
+	})
+	return out
 }
 
 // spreadParams 摊开窗口与最小间隔（窗口 <= 0 = 关闭）。与其它排程参数同口径在

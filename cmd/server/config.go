@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/prompt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
 )
 
 // Config 顶层配置。
@@ -32,7 +32,18 @@ type Config struct {
 	Panel struct {
 		// PackageDetailLimit 积分构成页单账号默认展示的最近到期包数；<=0 回落 5。
 		PackageDetailLimit int `json:"package_detail_limit"`
+		// PollIntervalSec 面板自动刷新间隔（秒）。0 = 用前端缺省（5s）；
+		// 负值 = 关闭自动刷新（只在手动操作时更新）。账号多、或只是开着面板
+		// 当监控用时，调大间隔能显著降低浏览器与服务端负担。
+		PollIntervalSec int `json:"poll_interval_sec"`
 	} `json:"panel"`
+
+	Update struct {
+		// AutoEnabled 每日按上海时间自动检查并安装原生 Release。
+		AutoEnabled bool `json:"auto_enabled"`
+		// AutoTime 自动更新时间，格式 HH:MM（Asia/Shanghai）。
+		AutoTime string `json:"auto_time"`
+	} `json:"update"`
 
 	Logging struct {
 		// RequestArchiveEnabled 请求元数据 JSONL 归档开关，缺省 true。
@@ -58,6 +69,10 @@ type Config struct {
 		// 400 "read body: ... i/o timeout"。缺省 "300s"；"0" = 不限制
 		//（慢速 body 可无限占用连接，自担风险）；改动需重启进程。
 		ReadTimeout string `json:"read_timeout"` // "300s"；"0" = 不限制
+		// ShutdownTimeout 优雅关停窗口（SIGTERM / 更新重启时，等在途请求排干的
+		// 时限）。长流式 SSE 合法时长可达分钟级，固定 5s 必然把在途请求掐成
+		// 连接重置。缺省 "30s"；"0" = 不等待直接退。改动需重启进程。
+		ShutdownTimeout string `json:"shutdown_timeout"`
 	} `json:"server"`
 
 	Cooldown struct {
@@ -75,8 +90,12 @@ type Config struct {
 		TravelHours    []int `json:"travel_hours"`    // [9,21]
 		ActivityHours  []int `json:"activity_hours"`  // [10]
 		KeepaliveHours []int `json:"keepalive_hours"` // [22]
-		BlackcatHours  []int `json:"blackcat_hours"`  // [23] 夜猫子窗口（23:00–08:00 计数）
-		GrowthHours    []int `json:"growth_hours"`    // [11] 成长任务队列（任务中心待办）自动执行
+		// KeepaliveRefreshWindow 周期 token 保活的临期窗口（如 "168h"=7 天）：排程到点
+		// 的保活只刷新剩余有效期 <= 窗口（或已过期/无 expiry）的凭证；面板手动
+		// 「全部保活」始终全量，不受影响。空 = 默认 "168h"；非法或 <=0 的值 fail fast。
+		KeepaliveRefreshWindow string `json:"keepalive_refresh_window"`
+		BlackcatHours          []int  `json:"blackcat_hours"` // [23] 夜猫子窗口（23:00–08:00 计数）
+		GrowthHours            []int  `json:"growth_hours"`   // [11] 成长任务队列（任务中心待办）自动执行
 		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/BlackcatEnabled/GrowthEnabled 显式禁用开关（缺省 true）。
 		//
 		// 为什么用独立 bool 而不是空数组/哨兵值表意"禁用"：
@@ -131,6 +150,21 @@ type Config struct {
 		// autoActions 白名单外的任务——它们此前除了手动一键完成没有任何补领路径。
 		TaskSweepEnabled bool `json:"task_sweep_enabled"` // 缺省 true；false = 关闭
 		TaskSweepMinutes int  `json:"task_sweep_minutes"` // 缺省 15；<=0 回落 15
+
+		// 周期抖动（人味化，anti-fingerprint）：>0 时余额刷新/补领清扫的每轮间隔
+		// 在 ±（值/1000）×基准间隔内随机偏移，不再精确固定间隔打卡；余额刷新
+		// 另把账号遍历摊开到同量级窗口内（见 internal/scheduler/humanize.go）。
+		// 0 = 关闭（旧行为：精确 interval ticker + 全账号并发齐射）。上限 500 = 50%。
+		// 例：balance_refresh_minutes=5 + 200 → 实际间隔在 3–7 分钟之间抖。
+		BalanceRefreshJitterPermill int `json:"balance_refresh_jitter_permill"` // 缺省 0；0–500
+		TaskSweepJitterPermill      int `json:"task_sweep_jitter_permill"`      // 缺省 0；0–500
+
+		// 夜间参与上限（人味化）：夜猫子（23:00–08:00 真实模型对话）等夜间任务的
+		// 参与账号收窄为积分最高的前 N 个，0 = 不限（旧行为全池参加）。背景：
+		// 深夜全池 12 个号在同一出口 IP 齐做真实对话，是最好认的机器人形状；真人
+		// 不会全部账号都在夜里有活动。夜猫子是唯一「整任务都是真实模型对话」的
+		// 任务，指纹最重，故只收窄它；白天任务（签到/旅行/成长）仍全池保号。
+		NightAccountCap int `json:"night_account_cap"` // 缺省 0（不限）；>0 = Top-N 按积分
 	} `json:"schedule"`
 
 	Global struct {
@@ -140,18 +174,23 @@ type Config struct {
 		// 也不路由，auth.Realm() 双保险的第一道闸）。纯 CN 部署行为不变：CN 账号
 		// 恒判 cn，global base 只在 realm=global 的账号上被使用。
 		Enabled bool `json:"enabled"`
-		// ChatBase / BillingBase 国际版上游 base 覆盖；空 = 回落内置默认
-		// https://www.workbuddy.ai（internal/upstream.defaultGlobalBase）。
+		// ChatBase / BillingBase 国际版上游 base 覆盖；空 = 按账号 auth 文件的
+		// domain 选官方主机（internal/loginsite.BaseForDomain）：
+		//   *.codebuddy.ai → https://www.codebuddy.ai（官方 CLI 国际站，缺省）
+		//   *.workbuddy.ai → https://www.workbuddy.ai（旧桌面端）
+		// domain 缺失时回落 https://www.codebuddy.ai。
+		// 两个国际域实测同一后端，差别只在主机名与 WAF 口径——所以不要为了
+		// 「统一」把 base 写死成一个域，老账号的 token 只在签发域可用。
 		ChatBase    string `json:"chat_base"`
 		BillingBase string `json:"billing_base"`
 	} `json:"global"`
 
 	CN struct {
 		// ChatBase 国内版 chat/模型目录上游 base 覆盖；空 = 回落内置默认
-		// https://copilot.tencent.com（internal/upstream.New 的 ChatBaseCN）。
-		// copilot.tencent.com 对海外出口（如 Clash 全局 + TUN）的 TLS 握手直接复位，
-		// CN 模型目录与对话全部 EOF；官方 WorkBuddy 桌面端已改用 https://www.workbuddy.cn，
-		// 该域海外出口可达，/v2/chat/completions、/v3/config 与模型目录路径同构。
+		// https://www.workbuddy.cn（internal/upstream.New 的 ChatBaseCN，官方桌面端
+		// product.json 的 endpoint）。
+		// 备选入口 copilot.tencent.com 对海外出口（如 Clash 全局 + TUN）的 TLS 握手
+		// 直接复位，CN 模型目录与对话全部 EOF；需要时用它填这个键回落。
 		ChatBase string `json:"chat_base"`
 	} `json:"cn"`
 
@@ -193,6 +232,9 @@ type Config struct {
 	Features struct {
 		// SanitizeBlacklistFingerprints 出站请求体黑名单指纹脱敏（默认 true；false 完全还原）。
 		SanitizeBlacklistFingerprints bool `json:"sanitize_blacklist_fingerprints"`
+		// SanitizeBrandScope 身份类规则（品牌词）作用域："all" = 所有消息角色（默认，与上游既有行为一致）；
+		// "identity" = 仅 system/developer，其余角色按用户数据原样透传（features.sanitize_brand_scope）。
+		SanitizeBrandScope string `json:"sanitize_brand_scope"`
 	} `json:"features"`
 
 	Models struct {
@@ -200,6 +242,14 @@ type Config struct {
 		// 生效点：GET /v1/models 列表过滤 + POST /v1/chat/completions 点名拒绝
 		// （只藏列表不够——知道名字仍可硬调）。面板保存后经 livecfg 热生效，无需重启。
 		Hidden []string `json:"hidden"`
+		// Allowed 对外暴露的模型白名单（issue #68）。条目语法与 Hidden 一致：
+		// 裸名=两域都允许；"cn:xxx"/"global:xxx"=只允许该域。空数组/未配置 =
+		// 白名单不启用（默认放行全部，向后兼容）。非空时仅白名单内模型可出现在
+		// /v1/models 并被点名调用，白名单外一律 400 拒绝（不打上游）。生效点在
+		// 别名映射之后（别名解析出的真实目标同样受检，不能绕过白名单）；与 Hidden
+		// 共存时取交集语义：Allowed 圈定「可能可见」集合，Hidden 仍可从中再剔除。
+		// 面板保存后经 livecfg 热生效，无需重启。
+		Allowed []string `json:"allowed"`
 		// Aliases 模型映射表（issue #30）："客户端名=真实模型名" 条目数组，与 Hidden
 		// 同存储形态（数组整体覆盖，面板删条目无需重启）。键：裸名=两域生效，
 		// "cn:x"/"global:x"=只在该域生效；键大小写不敏感。值可带 realm 前缀实现跨域
@@ -281,10 +331,15 @@ type Config struct {
 		// 0.2 = 便宜模型（x0.11 这类）在触底号上放行入账，x1.62 这类仍按收费拦。
 		// 0 = 严格模式（任何已知正倍率都拦）；负值钳 0。面板「积分保底」档位旁可改。
 		CreditFloorMaxRate float64 `json:"credit_floor_max_rate"`
-		// CrossDomainFallback 裸模型名跨域回退（issue #135）：请求未显式写
-		// cn:/global: 前缀时，首选域无可用号而另一域有号，则改用另一域选号；
-		// 显式前缀永不回退。默认 false（关闭 = 既有行为）。
-		CrossDomainFallback bool `json:"cross_domain_fallback"`
+		// ModelFallback 模型降级路由表：key = 客户端请求的模型（裸名），
+		// value = 该模型被 6004 模型级限流时改用的等价模型。
+		// 例：{"deepseek-v4.1-flash": "deepseek-v4-flash"}。
+		//
+		// 语义：等价模型是同一底层能力、只是计价不同；便宜的那个被限流时改用
+		// 稍贵的继续服务（可用性优先），限流解除后自动回原模型（不写持久状态）。
+		// 只对 6004 生效；11102/11101/普通 429/5xx 都不降级。
+		// 缺省 nil = 不降级（对老配置零影响）。
+		ModelFallback map[string]string `json:"model_fallback"`
 	} `json:"pool"`
 
 	SessionSticky struct {
@@ -338,10 +393,14 @@ type Config struct {
 	BalanceRefreshInterval time.Duration `json:"-"` // 0 = 不启动（enabled=false）
 	TaskSweepInterval      time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
 	ExpiringSoonDur        time.Duration `json:"-"`
+	// KeepaliveRefreshWindowDur 解析后的周期保活临期窗口；空回落 168h，<=0 报错。
+	KeepaliveRefreshWindowDur time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
 	ServerReadTimeoutDur time.Duration `json:"-"`
+	// ShutdownTimeoutDur 解析后的优雅关停窗口；0 = 不等待在途请求直接退。
+	ShutdownTimeoutDur time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -355,7 +414,9 @@ func Default() *Config {
 	c.Cooldown.SoftRate = "600s"
 	c.Cooldown.SoftRateMax = "2h"
 	c.Server.ReadTimeout = "300s"
+	c.Server.ShutdownTimeout = "30s"
 	c.Panel.PackageDetailLimit = 5
+	c.Update.AutoTime = "04:00"
 	c.Logging.RequestArchiveEnabled = true
 	c.Logging.RequestRetentionDays = 7
 	c.Logging.RequestArchiveMaxMB = 100
@@ -366,6 +427,8 @@ func Default() *Config {
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}
 	c.Schedule.KeepaliveHours = []int{22}
+	// 周期保活临期窗口默认 7 天：排程保活只刷新一周内到期的凭证，其余账号不动。
+	c.Schedule.KeepaliveRefreshWindow = "168h"
 	c.Schedule.BlackcatHours = []int{23}
 	c.Schedule.GrowthHours = []int{11}
 	// 开关「缺省 true」靠这几行实现：Load 先取 Default() 再 json.Unmarshal 覆盖，
@@ -388,6 +451,7 @@ func Default() *Config {
 	// ChatBase/BillingBase 缺省空（回落内置默认）。
 	c.Global.Enabled = true
 	c.Features.SanitizeBlacklistFingerprints = true
+	c.Features.SanitizeBrandScope = "all"
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
 	c.Pool.MaxInFlight = 3
 	// MaxInFlightGlobal 缺省 2：global 域 WAF 风控更紧，压低单号并发（WAF 403 修复
@@ -567,6 +631,9 @@ func applyEnv(c *Config) {
 			c.Features.SanitizeBlacklistFingerprints = b
 		}
 	}
+	if v := os.Getenv("WB2A_SANITIZE_BRAND_SCOPE"); v != "" {
+		c.Features.SanitizeBrandScope = v
+	}
 	if v := os.Getenv("WB2A_PROMPT_MODE"); v != "" {
 		c.Prompt.Mode = v
 	}
@@ -589,6 +656,21 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_SCHEDULE_ACCOUNT_SPREAD_MIN_GAP_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Schedule.AccountSpreadMinGapSeconds = n
+		}
+	}
+	if v := os.Getenv("WB2A_SCHEDULE_BALANCE_REFRESH_JITTER_PERMILL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Schedule.BalanceRefreshJitterPermill = n
+		}
+	}
+	if v := os.Getenv("WB2A_SCHEDULE_TASK_SWEEP_JITTER_PERMILL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Schedule.TaskSweepJitterPermill = n
+		}
+	}
+	if v := os.Getenv("WB2A_SCHEDULE_NIGHT_ACCOUNT_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Schedule.NightAccountCap = n
 		}
 	}
 	if v := os.Getenv("WB2A_ADMIN_ENABLED"); v != "" {
@@ -646,6 +728,7 @@ func (c *Config) EnvironmentManagedFields() []string {
 		{"WB2A_CLIENT_NAME", "upstream.client_name", ""}, {"WB2A_DEVICE_TOKEN", "upstream.device_token", ""},
 		{"WB2A_DEVICE_TOKEN_FILE", "upstream.device_token_file", ""}, {"WB2A_PASSTHROUGH_IP", "upstream.passthrough_ip", "bool"},
 		{"WB2A_SANITIZE_FINGERPRINTS", "features.sanitize_blacklist_fingerprints", "bool"},
+		{"WB2A_SANITIZE_BRAND_SCOPE", "features.sanitize_brand_scope", ""},
 		{"WB2A_PROMPT_MODE", "prompt.mode", ""}, {"WB2A_PROMPT_FILE", "prompt.file", ""},
 		{"WB2A_EXPIRING_SOON", "pool.expiring_soon", ""}, {"WB2A_PREFER_EXPIRING", "pool.prefer_expiring", "bool"},
 		{"WB2A_SCHEDULE_JITTER_MINUTES", "schedule.jitter_minutes", "int"},
@@ -699,6 +782,14 @@ func (c *Config) normalize() error {
 	if c.Panel.PackageDetailLimit <= 0 {
 		c.Panel.PackageDetailLimit = 5
 	}
+	if c.Update.AutoTime == "" {
+		c.Update.AutoTime = "04:00"
+	}
+	if !isClockTime(c.Update.AutoTime) {
+		return fmt.Errorf("update.auto_time: %q 不是合法时间（HH:MM，按上海时间）", c.Update.AutoTime)
+	}
+	// PollIntervalSec 不做回落：0 = 缺省（前端 5s），负数 = 关闭自动刷新。
+	// 两者都是合法取值，normalize 必须原样保留（回落会把「关闭」变成「5 秒」）。
 	if c.Logging.RequestRetentionDays <= 0 {
 		c.Logging.RequestRetentionDays = 7
 	}
@@ -715,6 +806,17 @@ func (c *Config) normalize() error {
 	}
 	if c.ServerReadTimeoutDur < 0 {
 		return fmt.Errorf("server.read_timeout: 负时长 %q 无意义", c.Server.ReadTimeout)
+	}
+	// 优雅关停窗口：空回落 30s（分钟级在途 SSE 远比旧固定 5s 常见）；"0" 合法
+	//（立即退）；负值 fail fast。
+	if c.Server.ShutdownTimeout == "" {
+		c.Server.ShutdownTimeout = "30s"
+	}
+	if c.ShutdownTimeoutDur, err = time.ParseDuration(c.Server.ShutdownTimeout); err != nil {
+		return fmt.Errorf("server.shutdown_timeout: %q %w", c.Server.ShutdownTimeout, err)
+	}
+	if c.ShutdownTimeoutDur < 0 {
+		return fmt.Errorf("server.shutdown_timeout: 负时长 %q 无意义", c.Server.ShutdownTimeout)
 	}
 	if c.SoftRateDur, err = time.ParseDuration(c.Cooldown.SoftRate); err != nil {
 		return fmt.Errorf("cooldown.soft_rate: %w", err)
@@ -848,6 +950,18 @@ func (c *Config) normalize() error {
 	if len(c.Schedule.KeepaliveHours) == 0 {
 		c.Schedule.KeepaliveHours = []int{22}
 	}
+	// 周期保活临期窗口：空回落默认 168h（Default 已置，兜底显式 ""）；非法值
+	// fail fast（拼写错误静默吞掉等于窗口变 0 → 全量刷新，违背本字段意图）；
+	// <=0 无合理语义（0/负值想全量应直接删键），报错。
+	if c.Schedule.KeepaliveRefreshWindow == "" {
+		c.Schedule.KeepaliveRefreshWindow = "168h"
+	}
+	if c.KeepaliveRefreshWindowDur, err = time.ParseDuration(c.Schedule.KeepaliveRefreshWindow); err != nil {
+		return fmt.Errorf("schedule.keepalive_refresh_window: %w", err)
+	}
+	if c.KeepaliveRefreshWindowDur <= 0 {
+		return fmt.Errorf("schedule.keepalive_refresh_window: %q 必须为正时长（如 168h）", c.Schedule.KeepaliveRefreshWindow)
+	}
 	if len(c.Schedule.BlackcatHours) == 0 {
 		c.Schedule.BlackcatHours = []int{23}
 	}
@@ -890,6 +1004,14 @@ func (c *Config) normalize() error {
 			c.Admin.AuditFile = "./data/admin_audit.log"
 		}
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Features.SanitizeBrandScope)) {
+	case "", "all":
+		c.Features.SanitizeBrandScope = "all"
+	case "identity":
+		c.Features.SanitizeBrandScope = "identity"
+	default:
+		return fmt.Errorf("features.sanitize_brand_scope: %q 非法（all = 所有消息角色；identity = 仅 system/developer）", c.Features.SanitizeBrandScope)
+	}
 	if err := c.normalizeAlerting(); err != nil {
 		return err
 
@@ -906,6 +1028,16 @@ func (c *Config) normalize() error {
 			c.Schedule.TaskSweepMinutes = 15
 		}
 		c.TaskSweepInterval = time.Duration(c.Schedule.TaskSweepMinutes) * time.Minute
+	}
+	// 抖动合法性（上限 50%）：非法值直接报错而非静默钳位——配置错误该在启动时暴露。
+	if c.Schedule.BalanceRefreshJitterPermill < 0 || c.Schedule.BalanceRefreshJitterPermill > 500 {
+		return fmt.Errorf("schedule.balance_refresh_jitter_permill: %d 非法（0 = 关闭，上限 500）", c.Schedule.BalanceRefreshJitterPermill)
+	}
+	if c.Schedule.TaskSweepJitterPermill < 0 || c.Schedule.TaskSweepJitterPermill > 500 {
+		return fmt.Errorf("schedule.task_sweep_jitter_permill: %d 非法（0 = 关闭，上限 500）", c.Schedule.TaskSweepJitterPermill)
+	}
+	if c.Schedule.NightAccountCap < 0 {
+		return fmt.Errorf("schedule.night_account_cap: %d 非法（0 = 不限，>0 = Top-N）", c.Schedule.NightAccountCap)
 	}
 	if err := c.validateScheduleHours(); err != nil {
 		return err
@@ -971,6 +1103,20 @@ func checkHourRange(field, switchKey string, hours []int) error {
 		}
 	}
 	return nil
+}
+
+func isClockTime(value string) bool {
+	if len(value) != 5 || value[2] != ':' {
+		return false
+	}
+	for _, i := range []int{0, 1, 3, 4} {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	hour, errH := strconv.Atoi(value[:2])
+	minute, errM := strconv.Atoi(value[3:])
+	return errH == nil && errM == nil && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
 }
 
 func (c *Config) normalizeAlerting() error {

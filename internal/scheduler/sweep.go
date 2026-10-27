@@ -36,6 +36,12 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 		var logged time.Duration
 		for {
 			cur := time.Duration(s.sweepInterval.Load())
+			// 人味化抖动：间隔在 ±frac×interval 内偏移（每轮重取），不再精确固定间隔
+			// 打卡。基准间隔不变（热改/暂停语义不受影响）。见 humanize.go。
+			delay := cur + periodicJitter(cur, s.periodicJitterFor(true), "sweep")
+			if delay < 0 {
+				delay = 0
+			}
 			if cur != logged {
 				log.Printf("scheduler: 补领清扫每 %s（暂停中显示 0s）", cur)
 				logged = cur
@@ -49,7 +55,7 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()

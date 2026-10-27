@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // TestSpreadDeterministic 同一天同一任务同一批账号 → 偏移不变（重启不重排）。
@@ -92,5 +93,75 @@ func TestSpreadManualEntryNeverSpreads(t *testing.T) {
 	}
 	if !s.spreadEnabled() {
 		t.Fatal("窗口 > 0 时 spreadEnabled 应为 true")
+	}
+}
+
+// TestSpreadOrderFollowsPlannedTime 遍历顺序必须按计划时刻升序：这样每个 wait 都是
+// 最后一次，实际开始时刻 = 计划时刻。uid 序下若前面的账号计划时刻更晚，后面的会被
+// 逐个堵住、最后挤在同一秒跑完（issue #45 实测：10 个账号塌缩成 2–3 个执行时刻）。
+func TestSpreadOrderFollowsPlannedTime(t *testing.T) {
+	uids := make([]string, 10)
+	for i := range uids {
+		uids[i] = string(rune('a' + i))
+	}
+	now := time.Date(2026, 10, 22, 21, 0, 0, 0, cst.Loc)
+	plan := newAccountSpread(taskCheckin, uids, 45*time.Minute, 60*time.Second, now)
+	if plan == nil {
+		t.Fatal("窗口 > 0 时应生成计划")
+	}
+	list := make([]pool.Status, len(uids))
+	for i, uid := range uids {
+		list[i] = pool.Status{UID: uid}
+	}
+	cur := now
+	seen := make(map[string]bool, len(uids))
+	for _, st := range plan.order(list) {
+		if seen[st.UID] {
+			t.Fatalf("账号 %s 重复", st.UID)
+		}
+		seen[st.UID] = true
+		at := plan.at[st.UID]
+		if at.After(cur) {
+			cur = at
+		}
+		if !cur.Equal(at) {
+			t.Fatalf("账号 %s 在计划序下仍被前一账号推迟：计划 %v，实际 %v", st.UID, at, cur)
+		}
+	}
+	if len(seen) != len(uids) {
+		t.Fatalf("order 丢了账号：%d/%d", len(seen), len(uids))
+	}
+}
+
+// TestSpreadUIDOrderCollapses 回归证据：同一计划按 uid 序串行等待（修复前的行为）
+// 会塌缩——不同执行时刻数明显少于账号数。钉住「问题真实存在」，防止有人把
+// order() 改回 uid 序。
+func TestSpreadUIDOrderCollapses(t *testing.T) {
+	uids := make([]string, 10)
+	for i := range uids {
+		uids[i] = string(rune('a' + i))
+	}
+	now := time.Date(2026, 10, 22, 21, 0, 0, 0, cst.Loc)
+	plan := newAccountSpread(taskCheckin, uids, 45*time.Minute, 60*time.Second, now)
+	cur := now
+	moments := make(map[time.Time]bool, len(uids))
+	for _, uid := range uids {
+		if at := plan.at[uid]; at.After(cur) {
+			cur = at
+		}
+		moments[cur] = true
+	}
+	if len(moments) >= len(uids) {
+		t.Fatalf("uid 序竟然没有塌缩（%d/%d），回归证据失效", len(moments), len(uids))
+	}
+}
+
+// TestSpreadOrderNilPassthrough nil 计划（未启用/手动触发）不重排。
+func TestSpreadOrderNilPassthrough(t *testing.T) {
+	list := []pool.Status{{UID: "b"}, {UID: "a"}}
+	var plan *accountSpread
+	got := plan.order(list)
+	if len(got) != 2 || got[0].UID != "b" || got[1].UID != "a" {
+		t.Fatalf("nil 计划不应重排：%+v", got)
 	}
 }

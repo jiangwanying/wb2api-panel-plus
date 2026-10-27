@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 type Pool struct {
@@ -55,11 +55,6 @@ type Pool struct {
 	// 跑出第一笔实测入账）；> 该值 → 仍按收费模型拦（保住 kimi-k3-1 那类事故的防护）。
 	// 0 = 严格模式（任何已知正倍率都拦，即 PR #2 之前的现状）；负值非法保留原值。
 	creditFloorMaxRate float64
-	// crossDomainFallback 裸模型名跨域回退（SetCrossDomainFallback 注入，默认关闭）。
-	// 语义（issue #135）：请求未显式写 cn:/global: 前缀时，首选域选不到可用号
-	// （账号级冷却/在途占满/模型级负缓存）而另一域有号可服务，则改用另一域选号；
-	// 显式前缀永不回退。关闭时与既有行为完全一致（零回归）。
-	crossDomainFallback bool
 	// modelRateOf 按 (realm, 模型) 查上游目录积分倍率（"0.79" / "" = 未知）。
 	// 由 main 用 upstream.Client.ModelRate 注入——pool 不依赖 upstream 包（避免
 	// 循环依赖与分层破坏），nil 时倍率兜底不生效（退化为仅本地台账判定）。
@@ -282,21 +277,6 @@ func (p *Pool) CreditFloor() int64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.creditFloor
-}
-
-// SetCrossDomainFallback 注入「裸模型名跨域回退」开关（main 从 config 解析后调用）。
-// 默认 false = 关闭，与既有行为完全一致。
-func (p *Pool) SetCrossDomainFallback(v bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.crossDomainFallback = v
-}
-
-// CrossDomainFallback 透出生效的跨域回退开关（handler 选号用）。
-func (p *Pool) CrossDomainFallback() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.crossDomainFallback
 }
 
 // SetCreditFloor 注入积分保底线（main 从 config 解析后调用）。

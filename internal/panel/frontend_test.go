@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,12 +93,12 @@ const sandbox = new Proxy({
   addEventListener() {}, removeEventListener() {},
   matchMedia: () => ({ matches: false, addEventListener() {} }),
   setInterval, clearInterval, setTimeout, clearTimeout,
-  console, JSON, Math, Date, Number, String, Boolean, Object, Array, Promise, Map, Set, RegExp, Error, TypeError, isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent, URL, Symbol, Proxy, Reflect,
+  console, JSON, Math, Date, Number, String, Boolean, Object, Array, Promise, Map, Set, WeakMap, RegExp, Error, TypeError, isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent, URL, Symbol, Proxy, Reflect,
 }, { get(t, k) { return t[k]; }, has() { return true; } });
 sandbox.window = sandbox; sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 try {
-  vm.runInContext(src, sandbox, { filename: 'app.js' });
+  vm.runInContext("'use strict';\n" + src, sandbox, { filename: 'app.js' });
   console.log('SMOKE OK');
   process.exit(0);
 } catch (e) {
@@ -141,7 +142,7 @@ const end = src.indexOf('function usStat');
 if (start < 0 || end < 0) throw new Error('credit helpers not found');
 const ctx = { Number, String, RegExp };
 vm.createContext(ctx);
-vm.runInContext(
+vm.runInContext("'use strict';\n" + 
   src.slice(start, end) +
   '\nthis.fmtCredit=fmtCredit; this.fmtCreditRatio=fmtCreditRatio; this.fmtModelRate=fmtModelRate;',
   ctx
@@ -189,7 +190,7 @@ const end = src.indexOf('async function loadLogs');
 if (start < 0 || end < 0) throw new Error('logLevel not found');
 const ctx = { String, RegExp };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.logLevel=logLevel;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.logLevel=logLevel;', ctx);
 process.stdout.write(JSON.stringify({
   okTask: ctx.logLevel('panel: task auto uid=df6b07f7 code=Sequential_Tasks_6 status=done progress=10/10->10/10 claimed=true claim_error=""'),
   twoEmpty: ctx.logLevel('panel: task auto uid=x status=done claim_error="" balance_error=""'),
@@ -248,7 +249,7 @@ const ctx = {
   qrowHTML: () => '',
 };
 vm.createContext(ctx);
-vm.runInContext('let taskJobsLoading = false;\n' + src.slice(start, end) +
+vm.runInContext("'use strict';\n" + 'let taskJobsLoading = false;\n' + src.slice(start, end) +
   '\nthis.loadTaskJobs = loadTaskJobs; this.groupsFromJobs = groupsFromJobs; this.setOwner = v => { taskCenterOwner = v; };', ctx);
 ctx.setJobs = v => { store.jobs = v; };
 (async () => {
@@ -322,7 +323,7 @@ const ctx = { String, Number, RegExp, Object, Array, Map, JSON, console, esc: s 
 const dom = new Proxy(function () {}, { get: (t, k) => (k === Symbol.toPrimitive ? () => '' : dom), set: () => true, apply: () => dom });
 Object.assign(ctx, { $: () => dom, document: dom, window: dom, localStorage: dom, location: dom });
 vm.createContext(ctx);
-vm.runInContext(titlesLine + '\n' + src.slice(nameStart, nameEnd) + '\n' + src.slice(jobsStart, jobsEnd) +
+vm.runInContext("'use strict';\n" + titlesLine + '\n' + src.slice(nameStart, nameEnd) + '\n' + src.slice(jobsStart, jobsEnd) +
   '\nthis.GROWTH_TITLES = GROWTH_TITLES;', ctx);
 // ① 只有 desc（后台任务行的真实形状）：第二列出中文说明，代号只出现一次
 const desc = '接受任务 → glm-5.2 真实对话一次 → 对齐模型上报';
@@ -363,7 +364,7 @@ const end = src.indexOf('function rateLimitRowsHtml');
 if (start < 0 || end < 0) throw new Error('rate limit helpers not found');
 const ctx = { Date, Number, String, Math };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.rateLimitMeta=rateLimitMeta;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.rateLimitMeta=rateLimitMeta;', ctx);
 const now = new Date(2026, 8, 28, 14, 0, 0).getTime();
 const reset = new Date(2026, 8, 28, 16, 0, 0).getTime();
 const until = new Date(2026, 8, 28, 15, 0, 0).getTime();
@@ -400,6 +401,56 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
+// 错误汇总样本列：正文用截断的 sample，title 必须用未截断的 sample_full。
+// 两者曾是同一个字段，悬停看到的就是同一段残句（issue #61）。
+func TestAppJSErrorSummaryTitleUsesFullSample(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; error summary title test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const escStart = src.indexOf('function esc(');
+const escEnd = src.indexOf('function ago(');
+const start = src.indexOf('function renderErrorSummary');
+const end = src.indexOf('function renderRequestMetrics');
+if ([escStart, escEnd, start, end].some(v => v < 0)) throw new Error('error summary region not found');
+const els = {};
+const ctx = { String, Math, $: id => (els[id] = els[id] || { innerHTML: '', textContent: '' }) };
+vm.createContext(ctx);
+vm.runInContext("'use strict';\n" + src.slice(escStart, escEnd) + src.slice(start, end) +
+  '\nthis.renderErrorSummary=renderErrorSummary; this.esc=esc;', ctx);
+const full = 'WARN: [upstream] chat_stream acct=a(1): upstream 400 model_blocked body={"code":11102,"msg":"model [x] not found","requestId":"req-1"}';
+const short = 'WARN: keepalive a(1): boom';
+ctx.renderErrorSummary({ scanned: 2, updated_at: '12:00:00', rows: [
+  { sev: 'warn', kind: 'k1', count: 1, sample: full.slice(0, 30), sample_full: full },
+  { sev: 'warn', kind: 'k2', count: 1, sample: short },
+]});
+const body = els.errBody.innerHTML;
+process.stdout.write(JSON.stringify({
+  fullInTitle: body.includes('title="' + ctx.esc(full) + '"'),
+  cellTruncated: body.includes('">' + ctx.esc(full.slice(0, 30)) + '</td>'),
+  fallbackTitle: body.includes('title="' + ctx.esc(short) + '"'),
+}));`
+	f, err := os.CreateTemp(t.TempDir(), "errsum-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("error summary title node test failed: %v\n%s", err, out)
+	}
+	const want = `{"fullInTitle":true,"cellTruncated":true,"fallbackTitle":true}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("error summary title=%s want %s", out, want)
+	}
+}
+
 // 请求记录行必须紧凑、可读，并带上调用来源（IP / UA）；来源缺失时以 — 兜底。
 func TestAppJSRequestLogFormatting(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -418,7 +469,7 @@ const reqEnd = src.indexOf('function fmtBytes');
 if ([escStart, escEnd, fmtStart, fmtEnd, reqStart, reqEnd].some(v => v < 0)) throw new Error('request log helpers not found');
 const ctx = { Date, Number, String, Math, RegExp, isNaN };
 vm.createContext(ctx);
-vm.runInContext(
+vm.runInContext("'use strict';\n" + 
   src.slice(escStart, escEnd) + src.slice(fmtStart, fmtEnd) + src.slice(reqStart, reqEnd) +
   '\nthis.requestLogText=requestLogText;',
   ctx
@@ -467,7 +518,7 @@ const end = src.indexOf('function renderCreditHistory');
 if (start < 0 || end < 0) throw new Error('credit history helpers not found');
 const ctx = { Date, Number, String, Math, RegExp, isNaN };
 vm.createContext(ctx);
-vm.runInContext(
+vm.runInContext("'use strict';\n" + 
   src.slice(start, end) +
   '\nthis.creditEntryText=creditEntryText;this.creditHistoryNote=creditHistoryNote;',
   ctx
@@ -514,7 +565,7 @@ const end = src.indexOf('function reqOutcomeTag');
 if (start < 0 || end < 0) throw new Error('reqMatch not found');
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.reqMatch=reqMatch;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.reqMatch=reqMatch;', ctx);
 const base = { outcome: 'success', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0', model: 'cn:glm-5.3', account: '示例(uid8)', request_id: 'req-1' };
 const other = { outcome: 'http_error', client_ip: '198.51.100.4', user_agent: 'Mozilla/5.0 Chrome/120', model: 'global:hy3', account: '甲(uid9)', request_id: 'req-2' };
 const rows = [base, other];
@@ -563,7 +614,7 @@ if (start < 0 || end < 0) throw new Error('model filter helpers not found');
 // rateCell/outCell 定义在切片之外（各管一个单元格），本测试只关心行内徽标/档位列，桩掉。
 const ctx = { Number, String, Array, Object, isFinite, parseFloat, esc: v => String(v == null ? '' : v), rateCell: () => '', outCell: () => '' };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.mdMatch=mdMatch; this.mdSortList=mdSortList; this.mdRateValue=mdRateValue; this.mdRowHtml=mdRowHtml;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.mdMatch=mdMatch; this.mdSortList=mdSortList; this.mdRateValue=mdRateValue; this.mdRowHtml=mdRowHtml;', ctx);
 const models = [
   { id: 'cn:glm-5.2', name: 'GLM-5.2', vendor: 'Zhipu', tags: ['视觉'], supports_tool_call: true, supports_images: true, supports_reasoning: true, can_disable_thinking: true, supported_efforts: ['high', 'xhigh'], default_effort: 'high', is_default: false, credits: '0.79', promo_factor: 0.5, promo_credits: '0.40', promo_label: '夜间折扣', context_length: 1000000, max_output_tokens: 131000 },
   { id: 'cn:hy3', name: 'Hy3', supports_tool_call: true, supports_images: true, supports_reasoning: true, can_disable_thinking: false, supported_efforts: ['low', 'high'], default_effort: 'high', is_default: false, credits: '0', promo_factor: 0, promo_credits: '0', promo_label: '限时免费', context_length: 192000, max_output_tokens: 64000 },
@@ -640,7 +691,7 @@ const end = src.indexOf('function mdRowHtml');
 if (start < 0 || end < 0) throw new Error('model availability helpers not found');
 const ctx = { esc: s => String(s) };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.mdAvailabilityOf=mdAvailabilityOf; this.mdAvailabilityTag=mdAvailabilityTag;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.mdAvailabilityOf=mdAvailabilityOf; this.mdAvailabilityTag=mdAvailabilityTag;', ctx);
 const model = id => ({ id });
 const state = (m, locks, recent) => ctx.mdAvailabilityOf(m, locks, recent).key;
 const success = [{ model: 'global:ok', status: 200, outcome: 'success', time: '2026-10-18T12:00:00Z' }];
@@ -702,7 +753,7 @@ const ctx = {
   $: () => host,
 };
 vm.createContext(ctx);
-vm.runInContext(src.slice(escStart, escEnd) + src.slice(fmtStart, fmtEnd) + src.slice(start, end) +
+vm.runInContext("'use strict';\n" + src.slice(escStart, escEnd) + src.slice(fmtStart, fmtEnd) + src.slice(start, end) +
   '\nthis.renderUsageChart=renderUsageChart;', ctx);
 const series = [
   { t: '2026-09-30T09', scope: 'hour', prompt_tokens: 35, completion_tokens: 16, total_tokens: 51, requests: 1 },
@@ -769,7 +820,7 @@ const ctx = {
   esc: s => String(s == null ? '' : s),
 };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) +
+vm.runInContext("'use strict';\n" + src.slice(start, end) +
   '\nthis.trangeState=trangeState; this.trangeQuery=trangeQuery; this.trangeLabel=trangeLabel; this.trangeMidnight=trangeMidnight;', ctx);
 const q = (preset, rolling) => {
   ctx.trangeState('t').preset = preset;
@@ -842,7 +893,7 @@ const end = src.indexOf('function renderPackages');
 if (start < 0 || end < 0) throw new Error('detail group functions not found');
 const ctx = { Date, Math, Number, String, Map, Array, Object, isFinite };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.pkDetailGroups = pkDetailGroups; this.pkDetailLimit = pkDetailLimit;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.pkDetailGroups = pkDetailGroups; this.pkDetailLimit = pkDetailLimit;', ctx);
 const input = [
   { id: 'small-late', size: 100, remain: 1, expires_at: 400 },
   { id: 'zero-early-b', size: 200, remain: 0, expires_at: 200 },
@@ -898,7 +949,7 @@ const end = src.indexOf('function renderExpiryDistribution');
 if (start < 0 || end < 0) throw new Error('expiry summary functions not found');
 const ctx = { Date, Math, Number, String, Map, Array, Object, isFinite };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.summarizeCreditDays = summarizeCreditDays; this.pkAccountColorMap = pkAccountColorMap;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.summarizeCreditDays = summarizeCreditDays; this.pkAccountColorMap = pkAccountColorMap;', ctx);
 const day = 86400000, now = 100000;
 const out = ctx.summarizeCreditDays([
   { uid: 'a', remain: 100, packages: [
@@ -1093,22 +1144,36 @@ func TestUsageChartSingleLegend(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(html)
-	start := strings.Index(body, `class="uschart-hd"`)
+	// 定位「Token 时序」那张图的卡头：页面上有多个 .uschart-hd（余额趋势也用同一套样式），
+	// 只按 class 找会命中第一个（余额水位），导致图例断言永远看到 0 项 ——
+	// 20261021 把「余额趋势」视图插到它前面时即踩到。改用「Token 时序」这个标签文本锚定。
+	start := strings.Index(body, `class="uschart-hd">`)
 	if start < 0 {
 		t.Fatal("index.html 里没有 uschart-hd 卡头")
 	}
-	end := strings.Index(body[start:], "</div>")
-	if end < 0 {
-		t.Fatal("uschart-hd 卡头没有闭合的 </div>")
-	}
-	hd := body[start : start+end]
-	if n := strings.Count(hd, `class="legend"`); n != 1 {
-		t.Errorf("Token 时序卡头应只有 1 条图例，实际 %d 条（重复图例=同一张图两种口径）", n)
-	}
-	for _, item := range []string{"prompt", "completion", "缓存命中率", "均值"} {
-		if n := strings.Count(hd, item); n != 1 {
-			t.Errorf("图例项 %q 在卡头出现 %d 次，应为 1 次", item, n)
+	// 从每个 uschart-hd 开始找，选取其片段里含「Token 时序」的那个
+	for {
+		end := strings.Index(body[start:], "</div>")
+		if end < 0 {
+			t.Fatal("uschart-hd 卡头没有闭合的 </div>")
 		}
+		if strings.Contains(body[start:start+end], "Token 时序") {
+			hd := body[start : start+end]
+			if n := strings.Count(hd, `class="legend"`); n != 1 {
+				t.Errorf("Token 时序卡头应只有 1 条图例，实际 %d 条（重复图例=同一张图两种口径）", n)
+			}
+			for _, item := range []string{"prompt", "completion", "缓存命中率", "均值"} {
+				if n := strings.Count(hd, item); n != 1 {
+					t.Errorf("图例项 %q 在卡头出现 %d 次，应为 1 次", item, n)
+				}
+			}
+			return
+		}
+		next := strings.Index(body[start+1:], `class="uschart-hd">`)
+		if next < 0 {
+			t.Fatal("未找到「Token 时序」卡头")
+		}
+		start = start + 1 + next
 	}
 }
 
@@ -1144,7 +1209,7 @@ const ctx = {
   $: id => (id === 'cfgForm' ? cfgForm : null),
 };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.collectConfig = collectConfig;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.collectConfig = collectConfig;', ctx);
 const out = ctx.collectConfig();
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o || {}, k);
 process.stdout.write(JSON.stringify([
@@ -1188,7 +1253,7 @@ const start = src.indexOf('function rateCell(');
 assert.ok(start >= 0, 'rateCell not found');
 const ctx = { String, Object, esc: v => String(v == null ? '' : v) };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, src.indexOf('async function loadModels(')) + '\nthis.rateCell = rateCell;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, src.indexOf('async function loadModels(')) + '\nthis.rateCell = rateCell;', ctx);
 // ① 无牌价 + 有实测 → 实测 0.55/张
 const a = ctx.rateCell({ credits: '', measured_credit: '0.55' });
 assert.ok(a.includes('实测 0.55/张'), 'want 实测 0.55/张, got: ' + a);
@@ -1228,7 +1293,7 @@ const st = { preset: '0', from: null, to: null };
 const ctx = { URLSearchParams, Date, Number, String, Object,
   trangeState: () => st, trangeMidnight: () => new Date('2026-10-06T00:00:00') };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, src.indexOf('function trangeLabel(')) + '\nthis.trangeQuery = trangeQuery;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, src.indexOf('function trangeLabel(')) + '\nthis.trangeQuery = trangeQuery;', ctx);
 // ① 用量（rolling）：「全部历史」→ hours=0
 st.preset = '0';
 assert.equal(ctx.trangeQuery('usRange', true).toString(), 'hours=0', '全部历史应发 hours=0');
@@ -1332,7 +1397,7 @@ const ctx = {
   startQueuePolling: () => calls.push('polling'),
 };
 vm.createContext(ctx);
-vm.runInContext('let queueTimer = null, lastQueueSeq = 0; let taskCenterOwner = "jobs";\n' +
+vm.runInContext("'use strict';\n" + 'let queueTimer = null, lastQueueSeq = 0; let taskCenterOwner = "jobs";\n' +
   src.slice(s, e) +
   '\nthis.setOwner = v => { taskCenterOwner = v; }; this.owner = () => taskCenterOwner;' +
   '\nthis.reattach = reattachQueueView;', ctx);
@@ -1397,7 +1462,7 @@ const ctx = {
   esc: (s) => String(s),
 };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start) + '\nthis.loadPackages = loadPackages;', ctx);
+vm.runInContext("'use strict';\n" + src.slice(start) + '\nthis.loadPackages = loadPackages;', ctx);
 (async () => {
   await ctx.loadPackages();                       // 冷：首次进入 → 打上游
   const cold = { calls: calls.length, rendered: rendered.slice() };
@@ -1537,7 +1602,7 @@ if (escStart < 0 || escEnd < 0) throw new Error('esc helpers not found');
 if (start < 0 || end < 0) throw new Error('remark helpers not found');
 const ctx = { String, RegExp, Number };
 vm.createContext(ctx);
-vm.runInContext(
+vm.runInContext("'use strict';\n" + 
   src.slice(escStart, escEnd) + src.slice(start, end) +
   '\nconst REM = {abcdef12: "JTOL", deadbeef: "<b>x</b>"};' +
   '\nfunction remarksAll() { return REM; }' +
@@ -1647,7 +1712,7 @@ const ctx = {
   api: async () => ({}),
 };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\n' + toggleSrc +
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\n' + toggleSrc +
   '\nthis.renderCompensation = renderCompensation; this.setData = (d) => { compData = d; };' +
   ' this.applyRestToggle = applyRestToggle; this.restOpen = restOpen;', ctx);
 
@@ -1783,15 +1848,6 @@ func TestPanelCompensationWiring(t *testing.T) {
 	}
 }
 
-// TestAppJSExpiryRestToggleSurvivesRerender 钉住「其余 N 个账号」的展开态不会被 5s 轮询自动收起。
-//
-// 根因：账号池每 5s 调 loadOverview → renderExpirySnapshot 重建 #expBody.innerHTML；展开状态
-// 原先只写在 DOM（aria-expanded / hidden）上，重建即丢（用户看到「点展开后什么都不点又收起」）。
-// 现在状态存在模块级 restOpen，渲染后由 applyRestToggle 恢复；本测试同时钉住两个渲染函数的
-// 调用接线（只存状态不恢复，行为仍会回退）。
-// TestAppJSModelBusyTag 模型行渲染行为：busy/congested 必须出标签（bad 色），
-// idle/normal 与缺字段必须安静——「模型与档位」是唯一能看到 congested/unavailable 的地方。
-// 行为断言而非字符串断言：后者在 `if (false)` 这种「代码在但永远不跑」下仍会通过。
 func TestAppJSModelBusyTag(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1943,7 +1999,7 @@ const he = src.indexOf('/* usTabsHtml');
 if (hs < 0 || he < 0) throw new Error('usRow/usDimHead not found');
 const ctx = { Number, String, RegExp, Math, Array, Object };
 vm.createContext(ctx);
-vm.runInContext(
+vm.runInContext("'use strict';\n" + 
   src.slice(hs, he) +
   '\nconst esc = s => String(s);' +
   '\nconst fmtTok = n => String(n);' +
@@ -1979,5 +2035,105 @@ process.stdout.write(JSON.stringify(out));`
 	const want = `{"account":{"head":11,"row":11,"span":11},"model":{"head":8,"row":8,"span":8},"realm":{"head":8,"row":8,"span":8}}`
 	if got != want {
 		t.Fatalf("usage dim counts=%s want %s", got, want)
+	}
+}
+
+// TestAppJSAllCalledFunctionsDefined 钉住「app.js 里被调用的函数都必须在同一文件里有定义」。
+//
+// 为什么需要（20261021 实证）：迁移到 miskano7545 分支时，balance 模块的 JS 是按
+// 「函数名白名单」手工挑出来搬的，结果漏掉了被调用的底层工具 —— measureWidth /
+// lineWidthFor / smoothPath / realmLabel / CHK_FALLBACK_W / fmtNum / fmtTokens。
+// 现象：切到「余额趋势」页，视图能显示、标题正确、浏览器控制台**没有任何报错**，
+// 只是表格 0 行、图表空白（loadBalance 内部的 try/catch 把异常吞了）。
+// 现有守卫全都抓不到：TestAppJSSyntax 只查语法（未定义标识符是合法语法），
+// TestAppJSTopLevelSmoke 只求值顶层（漏掉的函数只在点击后才调用）。
+//
+// 判据说明：只查「函数调用形态」—`name(` —— 并要求 name 满足以下之一：
+//
+//	a) 本文件里有定义：function name / const|let|var name
+//	b) 是浏览器内置或关键字（白名单）
+//
+// 不做数据流分析（那是重新实现一个 JS 解析器），但足以拦住「搬代码漏函数」这类事故。
+func TestAppJSAllCalledFunctionsDefined(t *testing.T) {
+	src, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(src)
+
+	// 去掉注释与字符串字面量，避免把注释里的 `foo(` 或字符串里的 `'a(b'` 当调用。
+	// 顺序敏感：先块注释、再行注释、最后字符串（与真实词法顺序一致）。
+	js = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(js, "")
+	js = regexp.MustCompile(`//[^\n]*`).ReplaceAllString(js, "")
+	js = regexp.MustCompile(`(?s)'[^'\\\n]*(?:\\.[^'\\\n]*)*'`).ReplaceAllString(js, "''")
+	js = regexp.MustCompile("(?s)`[^`]*`").ReplaceAllString(js, "``")
+
+	// JS 关键字 / 运算符形态，不是函数调用。
+	keywords := map[string]bool{
+		"if": true, "for": true, "while": true, "switch": true, "catch": true,
+		"function": true, "return": true, "typeof": true, "new": true, "await": true,
+		"async": true, "delete": true, "void": true, "in": true, "of": true,
+	}
+
+	// 浏览器内置 / 语言内置：不在本文件定义，但必然可用。
+	builtins := map[string]bool{
+		"Number": true, "String": true, "Boolean": true, "Array": true, "Object": true,
+		"Math": true, "JSON": true, "Date": true, "Promise": true, "Map": true, "Set": true,
+		"WeakMap": true, "WeakSet": true,
+		"RegExp": true, "Error": true, "TypeError": true, "RangeError": true,
+		"isNaN": true, "isFinite": true, "parseInt": true, "parseFloat": true,
+		"encodeURIComponent": true, "decodeURIComponent": true, "setTimeout": true,
+		"clearTimeout": true, "setInterval": true, "clearInterval": true,
+		"fetch": true, "requestAnimationFrame": true, "getComputedStyle": true,
+		"alert": true, "confirm": true, "prompt": true, "structuredClone": true,
+		// 标准 Web API / 常见回调参数（不是本文件定义的函数）
+		"FormData": true, "TextEncoder": true, "TextDecoder": true, "Blob": true,
+		"URLSearchParams": true, "URL": true, "matchMedia": true, "open": true,
+		"addEventListener": true, "removeEventListener": true,
+		// Promise 构造参数 / 回调形参：在定义处以参数形式出现，不在顶层定义
+		"resolve": true, "reject": true, "callback": true,
+	}
+
+	defined := map[string]bool{}
+	// 定义形态：function name，以及 const|let|var 声明里的**每一个**标识符
+	// （`let a = 1, b = 2` 可能一行声明多个；`let mdProbeOf = () => undefined` 是箭头函数形态，
+	// 旧正则只取声明列表里的第一个名字，把 mdProbeOf 误判成未定义）。
+	declRe := regexp.MustCompile(`(?:const|let|var)\s+([^;\n]+)`)
+	identRe := regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*=`)
+	funcRe := regexp.MustCompile(`function\s+([A-Za-z_$][\w$]*)`)
+	for _, m := range funcRe.FindAllStringSubmatch(js, -1) {
+		defined[m[1]] = true
+	}
+	for _, m := range declRe.FindAllStringSubmatch(js, -1) {
+		for _, id := range identRe.FindAllStringSubmatch(m[1], -1) {
+			defined[id[1]] = true
+		}
+	}
+
+	// 收集所有调用：name( —— 排除方法调用 .name( 与属性访问
+	callRe := regexp.MustCompile(`(?:^|[^.\w$])([A-Za-z_$][\w$]*)\s*\(`)
+	missing := map[string]int{}
+	n := 0
+	for _, m := range callRe.FindAllStringSubmatch(js, -1) {
+		name := m[1]
+		n++
+		if keywords[name] || builtins[name] || defined[name] {
+			continue
+		}
+		missing[name]++
+	}
+	if n == 0 {
+		t.Fatal("没有从 app.js 里扫到任何函数调用，正则可能失效（去注释/字符串的逻辑误伤了）")
+	}
+	if len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for k := range missing {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			t.Errorf("app.js 调用了 %s() 但本文件里没有定义（调用 %d 次）—— 典型成因：搬代码时漏搬底层工具函数；"+
+				"运行时会在调用点抛 ReferenceError，若被 try/catch 吞掉则表现为「页面空白但无报错」", name, missing[name])
+		}
 	}
 }

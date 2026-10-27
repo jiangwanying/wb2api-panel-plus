@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/reqlog"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/usage"
 )
 
 // parseTimeParam 是「今天 / 自定义」区间的唯一入口：前端默认发 unix 秒，手工
@@ -126,47 +125,5 @@ func TestRequestLogsEmptyRangeReturnsArray(t *testing.T) {
 	}
 	if len(out.Entries) != 0 {
 		t.Fatalf("未来区间不该命中任何记录: %+v", out.Entries)
-	}
-}
-
-// 请求记录的账号筛选：下拉传 uid，归档存昵称——handler 必须做 uid→昵称翻译；
-// 直接传昵称（老调用方/手工调试）保持包含匹配语义。
-func TestRequestLogsAccountFilterByUID(t *testing.T) {
-	rec := reqlog.New(reqlog.Config{Enabled: true, Dir: t.TempDir(), MaxBytes: 1 << 20, RetentionDays: 7})
-	now := time.Now()
-	rec.Record(reqlog.Event{Time: now, Account: "小明", Model: "cn:hy3", Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess})
-	rec.Record(reqlog.Event{Time: now.Add(-time.Second), Account: "小红", Model: "cn:hy3", Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess})
-	rec.Close()
-
-	pl := pool.New("")
-	pl.Add(&auth.Auth{UID: "u1", Nickname: "小明"})
-	p := New(Config{Version: "test", APIKey: "k", Pool: pl, RequestLog: rec})
-
-	get := func(query string) []reqlog.Event {
-		t.Helper()
-		req := httptest.NewRequest("GET", "/panel/api/request_logs?limit=10"+query, nil)
-		req.Header.Set("Authorization", "Bearer k")
-		rr := httptest.NewRecorder()
-		p.ServeHTTP(rr, req)
-		if rr.Code != 200 {
-			t.Fatalf("%s -> %d %s", query, rr.Code, rr.Body)
-		}
-		var out struct {
-			Entries []reqlog.Event `json:"entries"`
-		}
-		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
-			t.Fatal(err)
-		}
-		return out.Entries
-	}
-
-	if got := get("&account=u1"); len(got) != 1 || got[0].Account != "小明" {
-		t.Fatalf("uid 过滤应命中 1 条小明的记录，得到 %+v", got)
-	}
-	if got := get("&account=小明"); len(got) != 1 || got[0].Account != "小明" {
-		t.Fatalf("昵称过滤应命中 1 条，得到 %+v", got)
-	}
-	if got := get("&account=陌生人"); len(got) != 0 {
-		t.Fatalf("不存在的账号应回 0 条，得到 %+v", got)
 	}
 }

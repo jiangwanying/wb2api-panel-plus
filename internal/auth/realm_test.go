@@ -48,8 +48,17 @@ func TestRealmDomainFallback(t *testing.T) {
 		{"www.workbuddy.ai", "global"},
 		{"workbuddy.ai", "global"},
 		{"sub.workbuddy.ai", "global"},
+		// 官方 CLI 国际站域（product.json externalDomain）：不认它会把国际站账号
+		// 误判成 cn，手写 auth 文件（无显式 realm 键）直接错域路由。
+		{"www.codebuddy.ai", "global"},
+		{"codebuddy.ai", "global"},
+		{"api.codebuddy.ai", "global"},
+		{"WWW.CODEBUDDY.AI", "global"},
 		{"www.codebuddy.cn", "cn"},
 		{"", "cn"},
+		// 相似后缀不能误吞（HasSuffix 必须带点）。
+		{"evilcodebuddy.ai", "cn"},
+		{"codebuddy.ai.evil.com", "cn"},
 	}
 	for _, c := range cases {
 		a := &Auth{Domain: c.domain}

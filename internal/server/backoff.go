@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // rotateBackoffBase 轮转退避基数（对齐官方 intl CLI computeRequestRetryDelayMs

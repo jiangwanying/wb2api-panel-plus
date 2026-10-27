@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
 )
 
 var flushInterval = 5 * time.Second
@@ -168,6 +168,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			disabled:                 s.Disabled,
 			paused:                   s.Paused,
 			reason:                   s.Reason,
+			disabledAt:               s.DisabledAt,
 			until:                    s.Until,
 			coolKind:                 s.CoolKind,
 			successCount:             s.SuccessCount,
@@ -226,6 +227,14 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 					e.modelCooldowns = map[string]modelCooldown{}
 				}
 				e.modelCooldowns[m] = modelCooldown{Until: mc.Until, ResetAt: mc.ResetAt, Reason: mc.Reason, AuditOnly: mc.AuditOnly}
+			}
+		}
+		// 手动关闭 (账号, 模型)：**无过期过滤**——它是永久语义，
+		// 与冷却（过期即弃）不同，不得被惰性清理顺手删掉。
+		if len(s.ModelOff) > 0 {
+			e.modelOff = map[string]modelOff{}
+			for m, o := range s.ModelOff {
+				e.modelOff[m] = modelOff{Since: o.Since, Note: o.Note}
 			}
 		}
 		// 成本账本：惰性过滤过期（modelCostTTL 外不恢复）+ 剔除结构破损条目
@@ -349,6 +358,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 		// 长生不老并被重启原样拾回（issue #207-4）。
 		if e.disabled || (!e.until.IsZero() && now.Before(e.until)) {
 			s.Reason, s.Until, s.CoolKind = e.reason, e.until, e.coolKind
+			s.DisabledAt = e.disabledAt
 		}
 		// 熔断截止：仅未过期才落盘（指针 nil 才能被 omitempty 真省略）。
 		if !e.breakerUntil.IsZero() && now.Before(e.breakerUntil) {
@@ -371,6 +381,13 @@ func (p *Pool) stateOverviewLocked() stateFile {
 					s.ModelCooldowns = map[string]stateModelCooldown{}
 				}
 				s.ModelCooldowns[m] = stateModelCooldown{Until: mc.Until, ResetAt: mc.ResetAt, Reason: mc.Reason, AuditOnly: mc.AuditOnly}
+			}
+		}
+		// 手动关闭：全量写出（无过期概念，永久保留）。
+		if len(e.modelOff) > 0 {
+			s.ModelOff = map[string]stateModelOff{}
+			for m, o := range e.modelOff {
+				s.ModelOff[m] = stateModelOff{Since: o.Since, Note: o.Note}
 			}
 		}
 		// 成本账本：惰性过滤过期观测（modelCostTTL 外不写——陈旧价格不复活）。

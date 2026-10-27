@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestReserveBlocksFallbackPathPaidModel 停牌号不得被兜底捞回来接付费模型：

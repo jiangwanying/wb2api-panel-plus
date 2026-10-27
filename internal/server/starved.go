@@ -27,8 +27,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // minStarvedBudget 低于此额度不救援：官方客户端用 max_tokens=1 做 key 探活

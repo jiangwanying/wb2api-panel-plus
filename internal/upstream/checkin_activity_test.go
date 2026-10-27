@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestGetCheckinActivityStatusShape CN 路径带 /v2 前缀 + 全字段解析（线上实测口径）。

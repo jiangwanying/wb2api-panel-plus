@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // 账号导出：AuthDir 下 *.json 全部导出（cockpit 兼容字段），notes.txt / *.tmp 跳过。

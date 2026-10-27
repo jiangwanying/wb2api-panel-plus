@@ -18,12 +18,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
+
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 const billingBaseCN = "https://www.codebuddy.cn"
@@ -32,33 +35,14 @@ const billingBaseCN = "https://www.codebuddy.cn"
 // www.codebuddy.cn 不认 workbuddy.ai 的 token（实测 401，workbuddy.ai 同 token 为 code=0）。
 const billingBaseGlobal = "https://www.workbuddy.ai"
 
-// billingBaseFor 按账号 realm 选择计费域。
-//
-// 判定口径与 internal/auth.Realm() 一致：显式 realm=global 或 domain 落在
-// workbuddy.ai 家族，都按国际版处理。cmd/credit 早先对所有账号硬编码 CN 域，
-// 导致 global 账号余额查询恒返回 401（面板显示的是池内缓存值，不是实时的）。
-func billingBaseFor(af *authFile) string {
-	if strings.EqualFold(strings.TrimSpace(af.Auth.Realm), "global") {
-		return billingBaseGlobal
-	}
-	d := strings.ToLower(strings.TrimSpace(af.Auth.Domain))
-	if d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") {
+// billingBaseFor 按账号 realm 选择计费域（判定收敛到 auth.IsGlobal，与主程序
+// 同一口径；此前手抄的 realm/domain 推断靠人工同步）。cmd/credit 早先对所有
+// 账号硬编码 CN 域，导致 global 账号余额查询恒返回 401。
+func billingBaseFor(a *auth.Auth) string {
+	if a.IsGlobal() {
 		return billingBaseGlobal
 	}
 	return billingBaseCN
-}
-
-type authFile struct {
-	Auth struct {
-		AccessToken string `json:"accessToken"`
-		Domain      string `json:"domain"`
-		Realm       string `json:"realm"`
-	} `json:"auth"`
-	Account struct {
-		UID          string `json:"uid"`
-		EnterpriseID string `json:"enterpriseId"`
-		Nickname     string `json:"nickname"`
-	} `json:"account"`
 }
 
 type accountResult struct {
@@ -110,7 +94,7 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
-func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err error) {
+func fetchUserResource(a *auth.Auth) (remain, used, size int64, packs int, err error) {
 	now := time.Now()
 	body, _ := json.Marshal(map[string]any{
 		"PageNumber":               1,
@@ -120,7 +104,7 @@ func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err e
 		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
 		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	})
-	base := billingBaseFor(af)
+	base := billingBaseFor(a)
 	// global 域无 /v2 前缀（与 internal/upstream 的 billingMeterPaths 同口径）。
 	path := "/v2/billing/meter/get-user-resource"
 	if base == billingBaseGlobal {
@@ -130,18 +114,18 @@ func fetchUserResource(af *authFile) (remain, used, size int64, packs int, err e
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+af.Auth.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	if af.Account.UID != "" {
-		req.Header.Set("X-User-Id", af.Account.UID)
+	if a.UID != "" {
+		req.Header.Set("X-User-Id", a.UID)
 	}
-	if af.Account.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", af.Account.EnterpriseID)
-		req.Header.Set("X-Tenant-Id", af.Account.EnterpriseID)
+	if a.EnterpriseID != "" {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
 	}
-	if af.Auth.Domain != "" {
-		req.Header.Set("X-Domain", af.Auth.Domain)
+	if a.Domain != "" {
+		req.Header.Set("X-Domain", a.Domain)
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
@@ -200,20 +184,42 @@ func main() {
 	files, _ := filepath.Glob(filepath.Join(authDir, "workbuddy-*.json"))
 	sort.Strings(files)
 
+	up := upstream.New()
 	accounts := make([]accountResult, 0, len(files))
 	for _, f := range files {
-		var af authFile
+		// 坏文件不再静默跳过（跳过会让 total.accounts 与目录文件数对不上且无任何
+		// 线索）：计入明细行，与 signin/trial 的 LOAD_ERR 口径一致。auth.Parse 同时
+		// 支持嵌套形与扁平形手写文件（此前自定义结构只认嵌套形，扁平形的 token
+		// 解析为空、报误导性的 no accessToken）。
 		raw, err := os.ReadFile(f)
-		if err != nil || json.Unmarshal(raw, &af) != nil {
+		var a *auth.Auth
+		if err == nil {
+			a, err = auth.Parse(raw)
+		}
+		if err != nil {
+			accounts = append(accounts, accountResult{UID: "", Nickname: filepath.Base(f), Error: "load: " + err.Error()})
 			continue
 		}
-		res := accountResult{UID: af.Account.UID, Nickname: af.Account.Nickname}
-		if af.Auth.AccessToken == "" {
+		a.FilePath = f
+		res := accountResult{UID: a.UID, Nickname: a.Nickname}
+		// 过期 token 自动 refresh 并写回（与 signin 同款；此前 token 一过期全部
+		// 账号 failed，必须先跑一遍 signin 才能救回来）。
+		if a.NeedsRefresh(2 * time.Hour) {
+			if rerr := up.RefreshTokenIfNeeded(a, 2*time.Hour); rerr != nil {
+				res.Error = "refresh: " + rerr.Error()
+				accounts = append(accounts, res)
+				continue
+			}
+			if serr := a.SaveAtomicRetry(); serr != nil {
+				log.Printf("credit %s save: %v", a.UID, serr)
+			}
+		}
+		if a.AccessToken == "" {
 			res.Error = "no accessToken"
 			accounts = append(accounts, res)
 			continue
 		}
-		remain, used, size, packs, err := fetchUserResource(&af)
+		remain, used, size, packs, err := fetchUserResource(a)
 		if err != nil {
 			res.Error = err.Error()
 		} else {

@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 官方「福利」类活动共用同一响应形态（补偿 / 新手礼包实测同构）：

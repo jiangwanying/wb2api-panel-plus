@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 余额查询成功必须通知观察者一次（uid + 余额）：这是积分历史留痕的唯一数据入口。

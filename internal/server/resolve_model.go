@@ -1,10 +1,6 @@
 package server
 
-import (
-	"strings"
-
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-)
+import "github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 
 // resolveModel 解析模型名协议（PLAN D6）：
 //
@@ -23,19 +19,3 @@ func resolveModel(model string) (realm, bare string) {
 
 // ResolveModel 是 resolveModel 的导出面（跨包调用）。
 func ResolveModel(model string) (realm, bare string) { return resolveModel(model) }
-
-// realmExplicitPrefix 判断模型名是否显式声明了域前缀（cn: / global:）。
-// 跨域回退（issue #135）只在「裸名」时生效：显式前缀代表调用方的路由意图，
-// 永不回退到另一域。
-func realmExplicitPrefix(model string) bool {
-	m := strings.TrimSpace(model)
-	return strings.HasPrefix(m, "cn:") || strings.HasPrefix(m, "global:")
-}
-
-// otherRealm 返回另一个账号域（cn ↔ global）。
-func otherRealm(realm string) string {
-	if realm == "global" {
-		return "cn"
-	}
-	return "global"
-}

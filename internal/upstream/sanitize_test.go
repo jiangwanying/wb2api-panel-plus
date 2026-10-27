@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 const (
@@ -90,7 +90,7 @@ func TestSanitizeMessagesScrubsReasoningField(t *testing.T) {
 		"content":   "hi",
 		"reasoning": ccIdentity,
 	}}
-	if !sanitizeMessages(ms) {
+	if !sanitizeMessages(ms, true) {
 		t.Fatal("reasoning 字段里的指纹未被净化")
 	}
 	got, _ := ms[0].(map[string]any)["reasoning"].(string)
@@ -111,7 +111,7 @@ func TestToolCallArgumentsSanitized(t *testing.T) {
 			}},
 		}},
 	}
-	if !sanitizeMessages(msgs) {
+	if !sanitizeMessages(msgs, true) {
 		t.Fatal("sanitizeMessages 未报告任何改动，tool_calls 被跳过")
 	}
 	fn := msgs[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)
@@ -211,7 +211,7 @@ func TestMultimodalTextPartOnly(t *testing.T) {
 		map[string]any{"type": "text", "text": ccIdentity},
 		imgPart,
 	}
-	out, changed := sanitizeContent(content)
+	out, changed := sanitizeContent(content, true)
 	if !changed {
 		t.Fatal("expected change")
 	}
@@ -393,22 +393,26 @@ func TestChatStreamWireBodySanitizeDisabled(t *testing.T) {
 // 改写结果不再含原始短语（可重复处理）。
 func TestDeepSeekHarnessBrandRewritten(t *testing.T) {
 	in := "You are an AI agent powered by DeepSeek Harness.\n\nCheck the exit code."
-	out := sanitizeText(in)
+	out := sanitizeTextIdentity(in)
 	if strings.Contains(out, "DeepSeek Harness") || !strings.Contains(out, "DeepSeekRuntime") {
 		t.Fatalf("brand word not rewritten: %q", out)
 	}
 	if !strings.HasPrefix(out, "You are an AI agent powered by DeepSeekRuntime.") {
 		t.Errorf("surrounding text changed: %q", out)
 	}
-	if again := sanitizeText(out); again != out {
+	if again := sanitizeTextIdentity(out); again != out {
 		t.Errorf("not idempotent: %q -> %q", out, again)
 	}
 }
 
 // 预检快路径：文本只含品牌词、不含任何其它指纹，也必须进入净化。
 func TestDeepSeekHarnessDetected(t *testing.T) {
-	if !hasFingerprint("You are interacting through the DeepSeek Harness Web GUI.") {
-		t.Error("brand word should hit the fast path")
+	in := "You are interacting through the DeepSeek Harness Web GUI."
+	if hasFingerprint(in) {
+		t.Error("brand word should NOT hit the global fast path（否则非身份消息会被 TrimSpace/改写）")
+	}
+	if !hasIdentityFingerprint(in) {
+		t.Error("brand word should hit the identity fast path")
 	}
 }
 
@@ -417,7 +421,7 @@ func TestPrepareBodyRewritesDeepSeekHarness(t *testing.T) {
 	body := []byte(`{"model":"deepseek-v4.1-flash","messages":[` +
 		`{"role":"system","content":"You are an AI agent powered by DeepSeek Harness."},` +
 		`{"role":"user","content":"the DeepSeek Harness checkout is here"}]}`)
-	out, _, _ := prepareBodyOpt(body, true, nil, nil, nil, "", "", false)
+	out, _, _ := prepareBodyOpt(body, true, true, nil, nil, nil, "", "", false)
 	if strings.Contains(string(out), "DeepSeek Harness") {
 		t.Fatalf("brand word survived: %s", out)
 	}
@@ -430,4 +434,65 @@ func TestPrepareBodyRewritesDeepSeekHarness(t *testing.T) {
 func newTestUpstream(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(h)
+}
+
+// TestBrandScopeAllRewritesUserMessages 默认作用域（all）：与上游既有行为一致，
+// 所有消息角色的品牌词都改写（包括用户输入）。
+func TestBrandScopeAllRewritesUserMessages(t *testing.T) {
+	msgs := []any{
+		map[string]any{"role": "system", "content": "You are DeepSeek Harness."},
+		map[string]any{"role": "user", "content": "read DeepSeek Harness docs"},
+	}
+	if !sanitizeMessages(msgs, true) {
+		t.Fatal("sanitizeMessages all: 未报告改动")
+	}
+	for i, m := range msgs {
+		if got := m.(map[string]any)["content"].(string); strings.Contains(got, "DeepSeek Harness") {
+			t.Errorf("msg[%d] 品牌词未改写: %q", i, got)
+		}
+	}
+}
+
+// TestBrandScopeIdentityLeavesUserMessages identity 作用域：只改 system/developer，
+// 用户/工具/assistant 内容（含 tool_calls 参数与 reasoning）原样透传。
+func TestBrandScopeIdentityLeavesUserMessages(t *testing.T) {
+	msgs := []any{
+		map[string]any{"role": "system", "content": "You are DeepSeek Harness."},
+		map[string]any{"role": "user", "content": "  DeepSeek Harness  "},
+		map[string]any{"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c1", "function": map[string]any{
+				"name": "Read", "arguments": `{"path":"DeepSeek Harness.md"}`,
+			}}},
+		},
+	}
+	if !sanitizeMessages(msgs, false) {
+		t.Fatal("sanitizeMessages identity: system 未改写")
+	}
+	if got := msgs[0].(map[string]any)["content"].(string); !strings.Contains(got, "DeepSeekRuntime") {
+		t.Errorf("system 品牌词未改写: %q", got)
+	}
+	if got := msgs[1].(map[string]any)["content"].(string); got != "  DeepSeek Harness  " {
+		t.Errorf("user 内容被改动（应原样含首尾空白）: %q", got)
+	}
+	args := msgs[2].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["arguments"].(string)
+	if !strings.Contains(args, "DeepSeek Harness") {
+		t.Errorf("tool_calls 参数被改动: %q", args)
+	}
+}
+
+// TestBrandScopeDefaultGlobal 默认值：Client 未配置作用域时按 all 处理。
+func TestBrandScopeDefaultGlobal(t *testing.T) {
+	var c Client
+	c.SanitizeFingerprints.Store(true)
+	if !c.brandScopeGlobal() {
+		t.Error("默认应为 all（brandScopeGlobal=true）")
+	}
+	c.SanitizeBrandScope.Store("identity")
+	if c.brandScopeGlobal() {
+		t.Error("identity 应返回 false")
+	}
+	c.SanitizeBrandScope.Store("")
+	if !c.brandScopeGlobal() {
+		t.Error("空值应回落 all")
+	}
 }

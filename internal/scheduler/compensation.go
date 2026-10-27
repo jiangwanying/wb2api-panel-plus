@@ -13,9 +13,9 @@ import (
 	"log"
 	"sync"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 // CompensationRow 单账号补偿状态（面板 GET /panel/api/compensation 的行，

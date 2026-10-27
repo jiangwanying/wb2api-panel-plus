@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // blackcatEligible 夜猫子候选资格：禁用与暂停选号的账号都不跑。
@@ -40,7 +40,12 @@ func (s *Scheduler) runBlackcat(ctx context.Context, spread bool) {
 		return
 	}
 	plan := s.spreadPlan(taskBlackcat, spread, cst.Now())
-	for _, st := range s.cfg.Pool.List() {
+	// 夜间参与上限（schedule.night_account_cap）：夜猫子是全任务体系里唯一「整任务
+	// 都是真实模型对话」的，指纹最重——深夜全池同 IP 齐做真实对话是最好认的机器人
+	// 形状。>0 时候选收窄为积分最高的前 N 个（夜间流量集中到少数号，其余号夜里
+	// 静默）；0 = 不限（旧行为全池参加）。在 spread 计划之前收窄：不参与的不占窗口。
+	list := capByCredits(s.cfg.Pool.List(), s.NightAccountCap())
+	for _, st := range plan.order(list) {
 		// 暂停选号（paused）账号跳过：夜猫子是全任务体系里**唯一「整任务都是真实模型
 		// 对话」**的（RunNightChats 逐条 ChatStream 发 glm-5.2 短对话），与「让位防风控」
 		// 正面冲突。旅行 / 成长任务 / 连登管家都走上报与领奖 RPC，照常参与

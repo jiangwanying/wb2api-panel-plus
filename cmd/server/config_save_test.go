@@ -7,10 +7,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/livecfg"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/scheduler"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // TestSaveConfigReportsActualAndPendingRestarts 重启清单 = 「运行中配置 vs 新配置」的

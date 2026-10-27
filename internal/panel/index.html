@@ -17,6 +17,8 @@
   --bg: #0c0e14; --surface: #14171f; --surface-2: #1a1e28; --raise: #202531;
   --line: #262c3a; --line-soft: #1e232e;
   --ink: #e8ebf2; --ink-2: #a8b0c2; --ink-3: #6b7488;
+  --bh-1: #f0e070; --bh-2: #a7fa70; --bh-3: #70fa93; --bh-4: #70e1fa;
+  --bh-5: #9a8cf5; --bh-6: #ee70fa; --bh-7: #fa7097;
   --accent: #5b7cfa; --accent-ink: #ffffff; --accent-soft: rgba(91,124,250,.13);
   --ok: #3ddc97; --ok-soft: rgba(61,220,151,.12);
   --warn: #f5b544; --warn-soft: rgba(245,181,68,.12);
@@ -29,6 +31,8 @@
   --bg: #f4f5f8; --surface: #ffffff; --surface-2: #f8f9fb; --raise: #ffffff;
   --line: #e2e5ec; --line-soft: #eceef3;
   --ink: #14171f; --ink-2: #545c6e; --ink-3: #8b93a5;
+  --bh-1: #7d7900; --bh-2: #368700; --bh-3: #008a23; --bh-4: #00819e;
+  --bh-5: #1600bf; --bh-6: #af00bf; --bh-7: #bf0036;
   --accent: #3d5fe0; --accent-ink: #ffffff; --accent-soft: rgba(61,95,224,.09);
   --ok: #0f9d63; --ok-soft: rgba(15,157,99,.1);
   --warn: #b47611; --warn-soft: rgba(180,118,17,.11);
@@ -55,6 +59,16 @@ body {
 .brand { padding: 20px 18px 16px; border-bottom: 1px solid var(--line-soft); }
 .brand .name { font-weight: 650; letter-spacing: -.01em; font-size: 15px; }
 .brand .sub { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); margin-top: 3px; }
+.brand-version { display: flex; align-items: center; gap: 7px; margin-top: 4px; min-height: 22px; }
+.brand-version .sub { margin-top: 0; }
+.version-update {
+  appearance: none; border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--line));
+  border-radius: 999px; background: var(--warn-soft); color: var(--warn);
+  font: 550 10.5px/1.2 var(--sans); padding: 3px 7px; cursor: pointer;
+}
+.version-update:hover { border-color: var(--warn); }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
+#updateNote { overflow-wrap: anywhere; min-width: 0; }
 .nav ul { list-style: none; padding: 10px 8px; flex: 1; }
 .nav a {
   display: flex; align-items: center; gap: 10px; padding: 8px 11px; margin-bottom: 2px;
@@ -174,6 +188,20 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .inline { display: flex; align-items: center; gap: 9px; }
 
 /* ── 统计条（观测区）──────────────────────────────────────────────── */
+/* 余额趋势的统计卡（bhCard 生成 .st：k 标签在上、v 数值在下）。
+   与 .stat 的区别是 DOM 顺序相反（标签在前），故单独定义而非复用 ——
+   20261021 前缺少这段，导致 4 张卡片既无内边距也无字号层级，
+   表现为「账号5 当前合计18,633」标签与数值黏成一条文本流。 */
+.stats .st { padding: 14px 17px; border-right: 1px solid var(--line-soft); }
+.stats .st:last-child { border-right: none; }
+.stats .st .k { display: block; color: var(--ink-3); font-size: 11.5px; margin-bottom: 5px; }
+.stats .st .v { display: block; font: 600 26px/1.15 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; white-space: nowrap; }
+.stats .st .v.ok { color: var(--ok); }
+.stats .st .v.warn { color: var(--warn); }
+.stats .st .v.bad { color: var(--bad); }
+/* 卡数不固定（余额趋势 4 张、别处 7 张）：用 auto-fit 自适应列数，
+   避免固定 repeat(7,1fr) 时 4 张卡片只占前 4 格、右侧大片空白。 */
+.stats.auto { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 .stats {
   display: grid; grid-template-columns: repeat(7, 1fr);
   border: 1px solid var(--line); border-radius: 11px; background: var(--surface);
@@ -223,8 +251,8 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 档位标签列：允许换行在标签之间（不拆字），并给足最小宽度 */
 .acc .efs { min-width: 150px; }
 .acc .efs .tag { margin: 1px 0; }
-  /* 标签类列（默认档/思考档位/状态）表头与内容一起居中：胶囊自带内边距，
-     左对齐时文字起点比表头偏右，视觉上永远对不齐——居中是最稳的解法。 */
+  /* 标签类列（默认档/状态/上下文/最大输出）表头与内容一起居中：胶囊自带内边距，
+     左对齐时文字起点比表头偏右，视觉上永远对不齐。 */
   .acc th.c, .acc td.c { text-align: center; }
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
 .acc.md { min-width: 700px; }
@@ -288,6 +316,18 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .rate-limit span { color: var(--ink-2); }
 .acts { display: flex; gap: 5px; justify-content: flex-end; white-space: nowrap; }
 .acts button { padding: 3.5px 8px; font-size: 12.5px; white-space: nowrap; flex: none; }
+/* 表格里的操作列是 <td class="acts">：上面的 display:flex 会把 td 踢出表格布局，
+   导致 vertical-align:middle 失效（按钮整体偏上、行线不齐）。这里强制恢复
+   table-cell，让该列和其他列一样参与行高与垂直居中；按钮排列交给内层 .acts-inner。 */
+td.acts { display: table-cell; vertical-align: middle; text-align: right; }
+/* 账号池操作列：每个动作占固定槽位（签到 / 余额 / 任务 / 选号 / 禁用 / 移除），
+   缺哪个留空槽。否则「解冻 / 暂停选号 / 恢复选号」互斥会改变按钮个数，整列左右错位。
+   分列放在内层 div：td 保持 table-cell，vertical-align:middle 才继续生效
+   （直接给 td 设 display:grid 会退出表格布局，按钮变顶对齐）。 */
+.acts-inner { display: grid; grid-template-columns: repeat(4, 54px) 68px repeat(2, 54px); gap: 5px; justify-content: end; align-items: center; }
+/* 统一盒模型：primary 与 ghost 的边框/行高不同会让「解冻」行比「暂停选号」行高 2~3px，
+   行线因此参差。固定高度 + border-box 后每行等高、按钮底边对齐。 */
+.acts-inner button { width: 100%; height: 26px; box-sizing: border-box; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--ink-3); }
 .empty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
@@ -345,6 +385,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   padding: 11px 13px; font: 12px var(--mono); word-break: break-all; color: var(--accent);
   margin: 8px 0 12px; user-select: all;
 }
+/* 授权链接二维码：手机/异地添加时链接经 IM 转发常被截断，扫码更可靠。二维码恒白底（见 qrSVG），深色主题下也能扫。 */
+.qrbox { display: flex; justify-content: center; margin: 0 0 12px; }
+.qrbox svg { border-radius: 6px; }
 .state { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
 .state.ok { color: var(--ok); } .state.err { color: var(--bad); }
 .dots::after { content: "…"; animation: blink 1.2s steps(4) infinite; }
@@ -439,8 +482,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 10px; padding: 14px 17px 2px; }
   .kpis.k4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  @media (max-width: 1180px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 700px) { .kpis, .kpis.k4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  /* k7：用量总览七张卡（含平均缓存命中率）。宽屏一行放下；中屏折 4 列（4+3），
+     窄屏与基础栅格一样 2 列。 */
+  .kpis.k7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  @media (max-width: 1180px) {
+    .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .kpis.k7 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+  @media (max-width: 700px) { .kpis, .kpis.k4, .kpis.k7 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .kpi {
     position: relative; min-width: 0; overflow: hidden;
     background: var(--surface-2); border: 1px solid var(--line-soft);
@@ -473,7 +522,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     background: var(--surface-2); }
   .uschart-hd { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
     border-bottom: 1px solid var(--line-soft); font-size: 12px; }
-  .uschart-hd .lb { color: var(--ink-2); font-weight: 600; }
+  /* 图例里的账号名：超长名（如「汪羽杰（工作相关内容不要发v）」）会挤压整个卡头，
+   按 12em 截断 + 省略号，完整名放 title 悬浮可见。 */
+.uschart-hd .legend .lg-name { display: inline-block; max-width: 12em; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.uschart-hd .lb { color: var(--ink-2); font-weight: 600; }
   .uschart-hd .legend { color: var(--ink-3); font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
   .uschart-hd .legend .sep { width: 1px; height: 11px; background: var(--line); margin: 0 3px; }
   .uschart-hd .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
@@ -636,6 +689,61 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     color: var(--ink-2); font-size: 12.5px; }
   .rm-row input { flex: 1; }
 
+.acc td.fl { line-height: 1.35; }
+.acc td.fl .fl-row { display: block; font-variant-numeric: tabular-nums; }
+.acc td.fl .fl-sub { font-size: 11.5px; color: var(--ink-3); }
+.fl-v { color: var(--ink-2); }
+.fl-dim { opacity: .62; }
+.fl-zero { color: var(--ink-3); }
+.fl-na { color: var(--ink-3); }
+  .bh-daylegend { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .bh-daylegend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+  .bh-daylegend .lg-key { display: inline-flex; align-items: center; }
+  .bh-daylegend .lg-sep { width: 1px; height: 12px; background: var(--line); }
+  .bh-daylegend .lg-order { color: var(--ink-3); }
+
+/* ── 请求事件日志 (Keeper 风格大屏) ────────────────────────────────── */
+.events-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 20px 12px; }
+.events-title-wrap h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; }
+.events-title-wrap .subtext { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+.events-badge { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 500; color: var(--ink-2); }
+.events-filter-bar { display: flex !important; flex-direction: row !important; align-items: center !important; gap: 14px !important; padding: 12px 20px !important; border-bottom: 1px solid var(--line-soft) !important; flex-wrap: wrap !important; background: var(--surface); }
+.events-filter-group { display: inline-flex !important; align-items: center !important; gap: 6px !important; font-size: 12.5px; color: var(--ink-2); width: auto !important; margin: 0 !important; }
+.events-filter-group label { font-weight: 500; font-size: 12px; color: var(--ink-3); margin: 0; white-space: nowrap; }
+.events-filter-group select { width: auto !important; min-width: 140px !important; height: 32px; padding: 2px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 12.5px; outline: none; }
+.event-tbl-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.event-table { width: 100%; min-width: 1520px; border-collapse: collapse; font-size: 12px; text-align: left; }
+.event-table th { padding: 11px 14px; font-weight: 600; color: var(--ink-3); border-bottom: 1px solid var(--line); font-size: 11.5px; white-space: nowrap; background: var(--surface-2); }
+.event-table td { padding: 12px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; }
+.event-table tbody tr:hover { background: rgba(0, 0, 0, 0.02); }
+.time-cell .t-time { font-weight: 600; color: var(--ink); font-size: 13px; line-height: 1.2; }
+.time-cell .t-date { font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+.acct-cell { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.acct-icon { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, #0284c7, #38bdf8); display: inline-block; flex-shrink: 0; }
+.model-cell .m-name { font-weight: 600; color: var(--ink); font-size: 12.5px; }
+.tag-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; text-align: center; }
+.tag-success { background: #dcfce7; color: #15803d; border: 1px solid rgba(22, 163, 74, 0.25); }
+.tag-warn { background: #fef3c7; color: #b45309; border: 1px solid rgba(217, 119, 6, 0.25); }
+.tag-error { background: #fee2e2; color: #b91c1c; border: 1px solid rgba(220, 38, 38, 0.25); }
+.pill-effort { background: var(--surface-2); border: 1px solid var(--line); padding: 2px 7px; border-radius: 6px; font-size: 11.5px; color: var(--ink-2); font-weight: 500; }
+.req-tag { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 12px; color: #0284c7; }
+.req-path-sub { font-size: 10.5px; color: var(--ink-3); margin-top: 2px; }
+.metric-main { font-weight: 600; color: var(--ink); font-size: 13px; }
+.metric-sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.token-cell .tok-total { font-weight: 600; color: var(--ink); font-size: 12.5px; }
+.token-breakdown { display: flex; flex-direction: column; gap: 2px; font-size: 11px; margin-top: 3px; }
+.token-breakdown-row { display: flex; gap: 8px; }
+.tok-in { color: #0284c7; font-weight: 500; }
+.tok-out { color: #16a34a; font-weight: 500; }
+.tok-think { color: #9333ea; font-weight: 500; }
+.cache-cell .cache-rate { font-weight: 600; color: var(--ink); font-size: 12.5px; }
+.cache-breakdown { display: flex; flex-direction: column; gap: 2px; font-size: 11px; margin-top: 3px; }
+.cache-hit { color: #d97706; font-weight: 500; }
+.cache-miss { color: var(--ink-3); }
+.executor-name { font-weight: 600; color: var(--ink); font-size: 12px; }
+.ip-mono { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--ink-2); }
+.ua-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ink-3); cursor: help; }
+
   /* 到期提醒卡片（首页）：每账号一行，色点=危险度，正文数字用 mono 对齐。 */
   .exp-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
     font-size: 12.5px; }
@@ -648,15 +756,16 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .exp-main.err { color: var(--bad); }
 
 </style>
-<!-- 移动端适配：独立文件，必须在主 <style> 之后（@media 覆盖依赖层叠顺序） -->
-<link rel="stylesheet" href="mobile.css">
 </head>
 <body>
 <div class="shell">
   <nav class="nav">
     <div class="brand">
       <div class="name">WorkBuddy2API</div>
-      <div class="sub" id="navSub">控制台</div>
+      <div class="brand-version">
+        <div class="sub" id="navSub">v-</div>
+        <button type="button" class="version-update" id="navUpdate" hidden>有更新</button>
+      </div>
     </div>
     <ul>
       <li><a href="#accounts" data-view="accounts" class="on">
@@ -668,6 +777,8 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <li><a href="#packages" data-view="packages">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.2 5.4 8 2.5l5.8 2.9v5.2L8 13.5l-5.8-2.9z"/><path d="M2.2 5.4 8 8.3l5.8-2.9M8 8.3v5.2"/></svg>
         积分构成</a></li>
+      <li><a href="#balhist" data-view="balhist">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.2 5.4 8 2.5l5.8 2.9v5.2L8 13.5l-5.8-2.9z"/><path d="M2.2 5.4 8 8.3l5.8-2.9M8 8.3v5.2"/></svg>余额趋势</a></li>
       <li><a href="#taskscenter" data-view="taskscenter">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h10v9H8l-3 3v-3H3z"/><path d="M6 6.5h4M6 9h2.5"/></svg>
         任务中心</a></li>
@@ -677,6 +788,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <li><a href="#config" data-view="config">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>
         配置</a></li>
+      <li><a href="#events" data-view="events">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="2.5"/><path d="M5 5.5h6M5 8h6M5 10.5h3.5"/></svg>
+        请求事件日志</a></li>
       <li><a href="#logs" data-view="logs">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
         运行日志</a></li>
@@ -723,7 +837,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
       </div>
 
-      <!-- 到期提醒（旧版卡片布局）：数据取 /overview 的 credits_expiry_buckets
+      <!-- 到期提醒（卡片布局）：数据取 /overview 的 credits_expiry_buckets
            （签到与余额后台刷新按自然日聚合后写入 state.json），打开页面零上游请求。
            每账号一行卡片：最早到期 + 该批积分 + 日均需耗，后续批次用小字列出。 -->
       <div class="box" id="expBox">
@@ -786,6 +900,8 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <header>
           <h3>成长任务 <span class="hint" id="tcSummary"></span></h3>
           <span class="grow"></span>
+          <label class="sel-note" title="隐藏状态为「完成」的任务行"><input type="checkbox" id="tcHideDone" checked> 隐藏已完成</label>
+          <label class="sel-note" title="隐藏「该账号没有此任务」的任务行"><input type="checkbox" id="tcHideNa" checked> 隐藏不适用</label>
           <label class="sel-note">并发
             <select id="qcConc"><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select>
           </label>
@@ -900,6 +1016,60 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </div>
     </section>
 
+<section class="view" id="view-balhist" hidden>
+      <div class="box">
+        <header>
+          <h3>余额趋势</h3>
+          <span class="grow"></span>
+          <span class="seg" id="bhRealmSeg"></span>
+          <span class="note" id="bhNote">—</span>
+          <select id="bhWindow" class="xs">
+            <option value="1">近 24 小时</option>
+            <option value="7">近 7 天</option>
+            <option value="30" selected>近 30 天</option>
+          </select>
+          <button class="xs" id="btnBalHist">刷新</button>
+        </header>
+        <div class="stats auto" id="bhStats"></div>
+        <div class="pad">
+          <div class="uschart">
+            <div class="uschart-hd">
+              <span class="lb">积分水位（每 30 分钟一点）</span>
+              <span class="grow"></span>
+              <span class="legend" id="bhLegend"></span>
+            </div>
+            <div id="bhChart" class="uschart-body"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>每日变化</h3><span class="grow"></span>
+          <span class="note" id="bhDailyNote">每账号每天一根：绿=当日净增，红=当日净减；浅色/斜纹 = 该日采样不完整</span>
+        </header>
+        <div class="pad">
+          <div id="bhDaily" class="uschart-body"></div>
+          <div class="bh-daylegend" id="bhDailyLegend"></div>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>按账号</h3><span class="grow"></span>
+          <span class="note">净变化 = 窗口末值 − 窗口首值</span></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>账号</th>
+              <th class="num">当前</th><th class="num">最低</th><th class="num">最高</th>
+              <th class="num">净变化</th><th class="num">今日</th><th class="num">昨日</th><th class="num" title="上行=今日、下行=本月。均为按 30 分钟采样估算的消耗（相邻采样下降量之和）；采样间隔远粗于真实事件密度，同一窗口内的消耗与到账会被合并为净差，故为下界估计，实际可能更高。本月值受窗口限制，若窗口未覆盖整月会以淡化+提示标注。">消耗*</th><th class="num" title="上行=今日、下行=本月。均为按 30 分钟采样估算的到账（相邻采样上升量之和），口径与「消耗*」相同。">到账*</th><th class="num">采样点</th>
+            </tr></thead>
+            <tbody id="bhAccBody"></tbody>
+            <tfoot id="bhAccFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- 积分构成 -->
     <section class="view" id="view-packages" hidden>
       <div class="box">
@@ -933,7 +1103,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <span class="trange" id="usRange"></span>
           <button class="xs" id="btnUsage">刷新</button>
         </header>
-        <div class="kpis" id="usStats"></div>
+        <div class="kpis k7" id="usStats"></div>
         <div class="pad">
           <div class="uschart">
             <div class="uschart-hd">
@@ -1027,6 +1197,31 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <label class="fld"><span class="lb">单账号明细默认展示条数</span>
               <input name="package_detail_limit" type="number" min="1" placeholder="5">
               <span class="hint">积分构成页按最早到期展示，其余未用完包聚合</span></label>
+            <label class="fld"><span class="lb">面板自动刷新间隔（秒）</span>
+              <input name="poll_interval_sec" type="number" placeholder="0">
+              <span class="hint">0 = 缺省 5 秒；负数 = 关闭自动刷新（仅手动更新）。页面切到后台时自动暂停。</span></label>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>版本与更新</h3><span class="grow"></span><span class="note" id="updateNote" role="status">检查中…</span></header>
+          <div class="pad">
+            <div class="grid2">
+              <div>
+                <label class="switch"><span class="lb">自动更新</span>
+                  <input type="checkbox" name="update_auto_enabled"></label>
+                <span class="hint">每天按上海时间检查并安装新的时间标签版 Release；容器部署请更新镜像。</span>
+              </div>
+              <label class="fld"><span class="lb">自动更新时间（上海）</span>
+                <input name="update_auto_time" type="time" step="60" value="04:00">
+                <span class="hint">仅原生 Linux / Windows 二进制支持一键安装</span></label>
+            </div>
+            <div class="update-actions">
+              <span class="grow"></span>
+              <button type="button" id="btnUpdateCheck">检查更新</button>
+              <button type="button" id="btnUpdateRelease" hidden>打开 Release</button>
+              <button type="button" class="primary" id="btnUpdateInstall" hidden>立即更新</button>
+            </div>
           </div>
         </div>
 
@@ -1045,6 +1240,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                   <input type="checkbox" name="keepalive_enabled"></div>
                 <label class="fld"><span class="lb">保活时点（小时，逗号分隔）</span>
                   <input name="keepalive_hours" placeholder="22"></label>
+                <label class="fld"><span class="lb">保活临期窗口（Go 时长）</span>
+                  <input name="keepalive_refresh_window" placeholder="168h">
+                  <span class="hint">仅刷新剩余有效期不超过该时长的凭证；已过期/无到期时间的账号始终刷新。留空 = 沿用现值</span></label>
               </div>
             </div>
             <div class="hr"></div>
@@ -1106,6 +1304,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <label class="fld"><span class="lb">账号最小间隔（秒）</span>
                 <input name="account_spread_min_gap_seconds" type="number" min="0" max="3600" placeholder="0">
                 <span class="hint">0 = 只做随机。两个账号撞在同一时段时把后者推开；账号数 × 该值接近窗口时末尾会挤在一起。</span></label>
+            </div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">刷新抖动（‰）</span>
+                <input name="balance_refresh_jitter_permill" type="number" min="0" max="500" placeholder="0">
+                <span class="hint">0 = 关闭。余额刷新间隔按 ±该比例随机偏移：5 分钟 + 200 即实际 3–7 分钟。</span></label>
+              <label class="fld"><span class="lb">清扫抖动（‰）</span>
+                <input name="task_sweep_jitter_permill" type="number" min="0" max="500" placeholder="0">
+                <span class="hint">同上，作用于补领清扫间隔。上限 500（50%）。</span></label>
+              <label class="fld"><span class="lb">夜猫子参与上限</span>
+                <input name="night_account_cap" type="number" min="0" placeholder="0">
+                <span class="hint">0 = 全池参与。&gt;0 时只在积分最高的前 N 个账号做夜间真实对话。</span></label>
             </div>
             <div class="hr"></div>
             <div class="switch"><span class="lb">保号任务覆盖已禁用账号</span>
@@ -1202,6 +1411,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <label class="fld"><span class="lb">模型黑名单</span>
                 <input name="models_hidden" placeholder="deepseek-pro, cn:legacy-model">
                 <span class="hint">逗号分隔；裸名隐藏两域，cn: / global: 只隐藏该域；/v1/models 不列且点名调用直接拒绝，保存即热生效</span></label>
+              <label class="fld"><span class="lb">模型白名单</span>
+                <input name="models_allowed" placeholder="glm-5.2, global:gpt-5.4">
+                <span class="hint">逗号/空白分隔；空 = 不启用（默认全部放行）；非空时仅白名单内模型可列出与被调用，裸名两域、cn: / global: 只在该域；清空即关闭白名单，保存即热生效</span></label>
               <label class="fld"><span class="lb">模型映射</span>
                 <input name="models_aliases" placeholder="claude-opus-4=glm-5.2, gpt-5=global:gpt-5.4">
                 <span class="hint">逗号分隔的「客户端名=真实模型名」；真实名可带 cn:/global: 前缀跨域指向；响应回显客户端原发名；目标仍受黑名单约束，保存即热生效</span></label>
@@ -1223,6 +1435,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <div class="hr"></div>
             <div class="switch"><span class="lb">出站请求指纹脱敏</span>
               <input type="checkbox" name="sanitize_blacklist_fingerprints"></div>
+            <label class="fld"><span class="lb">品牌词规则作用域</span>
+              <select name="sanitize_brand_scope">
+                <option value="all">all — 所有消息角色（默认，与上游一致）</option>
+                <option value="identity">identity — 仅 system / developer</option>
+              </select>
+              <span class="hint">指纹脱敏总开关打开时生效。all 会改写 user / assistant / tool 历史里的同名文本；identity 只改身份消息，用户数据原样透传。</span></label>
             <div class="switch"><span class="lb">会话粘性路由</span>
               <input type="checkbox" name="session_sticky_enabled"></div>
             <div class="hint" style="margin-top:10px">Upstash Redis 镜像、凭证目录与状态文件路径需手工编辑配置文件（判为重启项）。</div>
@@ -1249,6 +1467,79 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </form>
     </section>
 
+    <!-- 请求事件日志 (Keeper 风格大屏) -->
+    <section class="view" id="view-events" hidden>
+      <div class="box">
+        <header class="events-header">
+          <div class="events-title-wrap">
+            <h3>请求事件日志 <span class="events-badge" id="eventBadge">共 0 条事件</span></h3>
+            <div class="subtext">筛选、查看并分析实时调用事件与性能指标（完全对齐 Keeper 风格）。</div>
+          </div>
+          <span class="grow"></span>
+          <div class="events-actions">
+            <button class="xs" id="btnEventExport" type="button">导出 JSON</button>
+          </div>
+        </header>
+
+        <div class="events-filter-bar">
+          <div class="events-filter-group">
+            <label for="eventFilterModel">模型</label>
+            <select id="eventFilterModel"><option value="">全部</option></select>
+          </div>
+          <div class="events-filter-group">
+            <label for="eventFilterAccount">来源</label>
+            <select id="eventFilterAccount"><option value="">全部</option></select>
+          </div>
+          <div class="events-filter-group">
+            <label for="eventFilterStatus">状态</label>
+            <select id="eventFilterStatus">
+              <option value="">全部</option>
+              <option value="success">成功</option>
+              <option value="429">429 限流</option>
+              <option value="error">错误</option>
+            </select>
+          </div>
+          <button class="xs ghost" id="btnEventClearFilters" type="button">清除筛选</button>
+          <span class="grow"></span>
+          <div class="events-filter-group">
+            <label for="eventFilterLimit">展示</label>
+            <select id="eventFilterLimit">
+              <option value="100" selected>最近 100 条</option>
+              <option value="300">最近 300 条</option>
+              <option value="500">最近 500 条</option>
+              <option value="1000">最近 1000 条</option>
+            </select>
+          </div>
+          <button class="xs primary" id="btnEventRefresh" type="button">刷新</button>
+        </div>
+
+        <div class="event-tbl-wrap">
+          <table class="event-table">
+            <thead>
+              <tr>
+                <th style="min-width: 90px">时间</th>
+                <th style="min-width: 180px">来源</th>
+                <th style="min-width: 180px">模型</th>
+                <th style="min-width: 75px">推理强度</th>
+                <th style="min-width: 75px">结果</th>
+                <th style="min-width: 90px">请求</th>
+                <th style="min-width: 100px">延时</th>
+                <th style="min-width: 85px">生成速度</th>
+                <th style="min-width: 125px">Token</th>
+                <th style="min-width: 115px">缓存</th>
+                <th style="min-width: 140px">执行器</th>
+                <th style="min-width: 110px">客户端 IP</th>
+                <th style="min-width: 180px">用户代理</th>
+              </tr>
+            </thead>
+            <tbody id="eventTableBody">
+              <tr><td colspan="13" style="text-align: center; padding: 30px; color: var(--ink-3);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- 日志 -->
     <section class="view" id="view-logs" hidden>
       <div class="box">
@@ -1270,9 +1561,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <option value="stream_error">流错误</option>
             <option value="interrupted">中断</option>
           </select>
-          <select id="reqAccount" aria-label="按账号筛选">
-            <option value="">全部账号</option>
-          </select>
+          <select id="reqAccount" aria-label="按账号筛选"></select>
           <span class="trange" id="reqRange"></span>
           <select id="reqLimit" aria-label="读取条数">
             <option value="100" selected>最近 100 条</option>
@@ -1337,9 +1626,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <span class="note" id="creditNote">—</span>
         </header>
         <div class="fbar">
-          <select id="creditAccount" aria-label="按账号筛选">
-            <option value="">全部账号</option>
-          </select>
+          <select id="creditAccount" aria-label="按账号筛选"></select>
           <span class="trange" id="creditRange"></span>
           <select id="creditLimit" aria-label="读取条数">
             <option value="100" selected>最近 100 条</option>
@@ -1409,16 +1696,18 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <div id="addTabLogin" class="tab-panel">
         <div id="addPick">
           <div class="realm-row">
-            <span class="hint" style="font-size:12px">版本：</span>
-            <label class="realm-opt"><input type="radio" name="addRealm" value="cn" checked> 国内版（CN）</label>
-            <label class="realm-opt"><input type="radio" name="addRealm" value="global"> 国际版（Global）</label>
+            <span class="hint" style="font-size:12px">站点：</span>
+            <label class="realm-opt"><input type="radio" name="addSite" value="cn" checked> 国内版（CN）</label>
+            <label class="realm-opt"><input type="radio" name="addSite" value="intl"> 国际版（Global）</label>
+            <label class="realm-opt"><input type="radio" name="addSite" value="workbuddy"> 国际版（旧桌面端）</label>
           </div>
-          <div class="hint" style="font-size:12px;margin-top:2px">国际版登录后，网关自动完成注册地区、激活与试用额度领取，全程无需手动操作。</div>
+          <div class="hint" style="font-size:12px;margin-top:2px">国际版登录后，网关自动完成注册地区、激活与试用额度领取，全程无需手动操作。「旧桌面端」仅用于已注册在 workbuddy.ai 的老账号，新账号请选国际版。</div>
         </div>
         <div id="addLoad" class="state" hidden><span class="dots">正在获取授权链接</span></div>
         <div id="addReady" hidden>
-          <div class="state">在浏览器打开以下链接并登录：</div>
+          <div class="state">在浏览器打开以下链接并登录，或用手机扫码（15 分钟内有效，过期请关闭后重新添加）：</div>
           <div class="url" id="addUrl"></div>
+          <div class="qrbox" id="addQr" hidden></div>
           <div class="state" id="addPoll"><span class="dots">等待授权完成，自动检测中</span></div>
         </div>
         <div id="addDone" class="state ok" hidden></div>

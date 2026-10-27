@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/session"
 )
 
 // busyLevel 取值与官方一致：idle / busy / unknown。

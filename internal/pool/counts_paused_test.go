@@ -3,7 +3,7 @@ package pool
 import (
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 计数口径：paused 单列 vs 并入 disabled——同一份遍历两种口径都要成立。

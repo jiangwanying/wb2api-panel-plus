@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // 老配置（无 cn 段）必须保留内置 CN base，零回归。

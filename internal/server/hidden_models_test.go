@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/livecfg"
 )
 
 // hiddenCatalog 一份含对话模型 + 出图模型的 CN 目录答复。

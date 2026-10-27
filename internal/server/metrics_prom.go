@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
 )
 
 const promMetricsCap = 512

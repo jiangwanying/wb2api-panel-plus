@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // ChatTiming 只做观测：nil 出参不得影响行为；非 nil 时 prep/do 都要有测量值。

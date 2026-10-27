@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/scheduler"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // compPanel 起一个只服务补偿两端点的桩，并装配 Panel（含 Scheduler）。

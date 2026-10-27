@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,25 +21,54 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/alert"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/credithist"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/alert"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/balance"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/credithist"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/livecfg"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/panel"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/redisstore"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/reqlog"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/scheduler"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/server"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/session"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/updater"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/usage"
 )
 
 // appVersion 面板版本，透出到 /panel/api/overview。
 // 本地构建保持 dev。发布构建由 CI 用 -X 注入上海时间（2026.9.26.711），不跟上游 1.x。
 var appVersion = "dev"
+var appRepository = "jiangwanying/wb2api-panel-plus"
+
+// insecureKeyWarning 空 api_key = 完全不鉴权（httpauth.VerifyBearer 对空 key 恒放
+// 行），样例占位符 test_key = 人尽皆知的弱密钥；叠加非回环监听（缺省 ":7863" 绑
+// 所有网卡）等于把网关与面板 API 暴露给整个内网/公网。返回非空告警文本供启动日志
+// 打印，安全状态返回空串。首启自动生成的随机 key 不会命中——这是给「照抄样例 /
+// 显式清空」的最后提醒，不阻塞启动。
+func insecureKeyWarning(listen, apiKey string) string {
+	if apiKey != "" && apiKey != "test_key" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		host = listen // 非 host:port 形态：按具名地址保守处理（继续告警）
+	}
+	switch {
+	case host == "", host == "0.0.0.0", host == "::":
+		// 空 host = 所有网卡，维持告警
+	case host == "127.0.0.1", host == "::1", strings.EqualFold(host, "localhost"):
+		return "" // 只听回环：暴露面有限，不打扰
+	}
+	what := "为空（网关与面板完全不鉴权）"
+	if apiKey != "" {
+		what = "为样例占位符 test_key"
+	}
+	return fmt.Sprintf("api_key %s，且监听 %s 非回环地址——对外无有效鉴权，请尽快修改配置里的 api_key", what, listen)
+}
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -55,10 +85,19 @@ func stateSibling(stateFile, name string) string {
 }
 
 func main() {
+	if handled, err := updater.HandleSelfUpdate(os.Args); handled {
+		if err != nil {
+			log.Printf("[updater] %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfgPath := flag.String("config", "config.json", "配置文件路径（默认当前目录 config.json；不存在时自动生成推荐配置）")
-	// 实际生效的配置路径：下面退回「默认+env」时清空，免得启动横幅报了份没读到的文件（issue #155）。
-	loadedFrom := *cfgPath
 	flag.Parse()
+	// 实际生效的配置路径。必须在 flag.Parse() **之后**取值：flag.String 返回的指针
+	// 在 Parse 时才写入命令行值，此前取到的是默认值拷贝，-config 自定义路径时横幅
+	// 会报一份根本没读的文件。下面退回「默认+env」时清空，同理（issue #155）。
+	loadedFrom := *cfgPath
 
 	cfg, err := Load(*cfgPath)
 	if err != nil {
@@ -112,7 +151,6 @@ func main() {
 	p.SetCostExploreInterval(cfg.CostExploreIntervalDur) // costTier 探索窗口（issue #136，默认 30m；0 关停）
 	p.SetCreditFloor(cfg.Pool.CreditFloor)               // 积分保底（默认 0 = 关闭）
 	p.SetCreditFloorMaxRate(cfg.Pool.CreditFloorMaxRate) // 保底兜底的目录倍率上限（0 = 严格模式）
-	p.SetCrossDomainFallback(cfg.Pool.CrossDomainFallback) // 裸模型名跨域回退（默认关闭）
 	p.SetWeights(cfg.Pool.IdleWeightPerHour, cfg.Pool.IdleWeightMax)
 	p.SetReserveCredits(*cfg.Pool.ReserveCredits) // 保留积分：余额低于阈值停止接单（0 = 关闭，缺省 10）
 	p.SetPreferExpiring(cfg.Pool.PreferExpiring, cfg.ExpiringSoonDur)
@@ -170,6 +208,14 @@ func main() {
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints)
+	up.SanitizeBrandScope.Store(cfg.Features.SanitizeBrandScope)
+	if cfg.Features.SanitizeBlacklistFingerprints {
+		if cfg.Features.SanitizeBrandScope == "identity" {
+			log.Printf("指纹脱敏已启用；品牌词规则仅作用于 system/developer（features.sanitize_brand_scope=identity）")
+		} else {
+			log.Printf("指纹脱敏已启用；品牌词规则作用于所有消息角色（features.sanitize_brand_scope=all）")
+		}
+	}
 	// 出站 UA 与归属头（issue #42 + 上游同步）：
 	// UserAgent 非空则完全覆盖；ClientVersion/CliVersion 缺省对齐官方形态；
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
@@ -194,6 +240,14 @@ func main() {
 	// 回落仓库内嵌种子；models.dev 按需拉取成功后原子写回。
 	upstream.SetModelCatalogPath(stateSibling(cfg.StateFile, "model.json"))
 
+	// 余额采样记录器：与 state 文件同目录（路径由 state 推出，不加配置项）。
+	// 采样动作挂在余额刷新之后（见 internal/scheduler），这里只管装配与落盘生命周期。
+	balPath := stateSibling(cfg.StateFile, "balance_history.json")
+	bal := balance.New(balPath)
+	bal.Start()
+	defer bal.Stop()
+	log.Printf("[balance] 余额趋势采样已启用: %s 每 %v 一点（%s）", balPath, balance.Interval(), bal.Describe())
+
 	sch := scheduler.New(scheduler.Config{
 		Pool:           p,
 		Upstream:       up,
@@ -203,6 +257,8 @@ func main() {
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
 		BlackcatHours:  cfg.Schedule.BlackcatHours,
 		GrowthHours:    cfg.Schedule.GrowthHours,
+		// 余额采样记录器：挂在余额刷新之后（scheduler 内），nil = 不采样。
+		Balance: bal,
 		// 快过期积分优先消耗：签到/余额刷新按此窗口分桶（issue:积分过期）。
 		ExpiringSoonWindow: cfg.ExpiringSoonDur,
 		CheckinDisabled:    !cfg.Schedule.CheckinEnabled,
@@ -211,6 +267,8 @@ func main() {
 		KeepaliveDisabled:  !cfg.Schedule.KeepaliveEnabled,
 		BlackcatDisabled:   !cfg.Schedule.BlackcatEnabled,
 		GrowthDisabled:     !cfg.Schedule.GrowthEnabled,
+		// 周期保活只刷新临期凭证（默认 7 天窗口）；面板手动全量保活不受影响。
+		KeepaliveRefreshWindow: cfg.KeepaliveRefreshWindowDur,
 		// 保号类四任务是否覆盖禁用账号（缺省 false = 禁用即跳过，保持既有行为）。
 		IncludeDisabledInTasks: cfg.Schedule.IncludeDisabledInTasks,
 		JitterMinutes:          cfg.Schedule.JitterMinutes,
@@ -275,6 +333,13 @@ func main() {
 	case cfg.TaskSweepInterval > 0:
 		log.Printf("补领清扫：每 %s（只 accept 待接受的、只 claim 已达标未领的）", cfg.TaskSweepInterval)
 	}
+	if cfg.Schedule.BalanceRefreshJitterPermill > 0 {
+		log.Printf("周期抖动（人味化）：余额刷新 ±%d‰（账号遍历同步摊开）、补领清扫 ±%d‰，不再精确固定间隔（schedule.*_jitter_permill）",
+			cfg.Schedule.BalanceRefreshJitterPermill, cfg.Schedule.TaskSweepJitterPermill)
+	}
+	if cfg.Schedule.NightAccountCap > 0 {
+		log.Printf("夜间参与上限：夜猫子只让积分最高的前 %d 个号参加（schedule.night_account_cap）", cfg.Schedule.NightAccountCap)
+	}
 	if cfg.Schedule.IncludeDisabledInTasks {
 		log.Printf("保号任务覆盖禁用账号（schedule.include_disabled_in_tasks=true）：禁用号仍签到 / 活跃 / 保活 / 刷新余额，但不参与选号")
 	}
@@ -282,13 +347,20 @@ func main() {
 	// 管理面板日志镜像：标准 log（stderr）与 chat 表格日志（stdout）双路复制进
 	// 面板环形缓冲，供 /panel/api/logs 读取；控制台输出行为完全不变。
 	// live 承载可热改字段（api_key/soft_rate/脱敏开关），面板保存配置时在线替换。
+	// 模型白名单（issue #68）：启动时归一化一次，快照只读持有。
+	allowedModels, allowlistEnabled := livecfg.NormalizeAllowedModels(cfg.Models.Allowed)
 	live := livecfg.New(livecfg.Snapshot{
 		APIKey:               cfg.APIKey,
 		SoftCooldown:         cfg.SoftRateDur,
 		SanitizeFingerprints: cfg.Features.SanitizeBlacklistFingerprints,
 		RecordClientInfo:     cfg.Logging.RequestClientInfo,
 		HiddenModels:         livecfg.NormalizeHiddenModels(cfg.Models.Hidden),
-		ModelAliases:         livecfg.NormalizeModelAliases(cfg.Models.Aliases),
+		// 模型白名单（issue #68）：归一化集合 + 启用标志；空配置 = 不启用。
+		AllowedModels:    allowedModels,
+		AllowlistEnabled: allowlistEnabled,
+		ModelAliases:     livecfg.NormalizeModelAliases(cfg.Models.Aliases),
+		// 模型降级路由表（pool.model_fallback）：6004 限流时同账号改用等价模型。
+		ModelFallback: cfg.Pool.ModelFallback,
 	})
 	// 用量记录器：与 state 文件同目录，随 state_file 配置一起搬移。
 	// datapath 由 state 文件路径推出，避免再加一个配置项。
@@ -326,6 +398,10 @@ func main() {
 	up.SetCreditObserver(creditHist.Observe)
 	log.Printf("[credithist] 积分历史已启用: %s", stateSibling(cfg.StateFile, "credit-history.json"))
 
+	updateManager := updater.New(appVersion, appRepository, *cfgPath, updater.Settings{
+		AutoEnabled: cfg.Update.AutoEnabled,
+		AutoTime:    cfg.Update.AutoTime,
+	})
 	var pn *panel.Panel
 	pn = panel.New(panel.Config{
 		Pool:       p,
@@ -333,6 +409,10 @@ func main() {
 		RequestLog: requestLog,
 		Upstream:   up,
 		Scheduler:  sch,
+		// 降级路由表：面板据此在限流提示里标注「已路由至 <等价模型>」。
+		ModelFallback: func() map[string]string { return live.Load().ModelFallback },
+		// 余额趋势采样记录器：nil 时该视图返回 501。
+		Balance: bal,
 		// 后台任务的自动触发开关与成长任务排程共用热配置（schedule.growth_enabled）。
 		AutoTasksEnabled: sch.GrowthEnabled,
 		AuthDir:          cfg.AuthDir,
@@ -340,6 +420,8 @@ func main() {
 		RedisMode:        redisMode,
 		StickyCount:      sessCount,
 		Version:          appVersion,
+		Updater:          updateManager,
+		PollIntervalSec:  cfg.Panel.PollIntervalSec,
 		Live:             live,
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
@@ -351,7 +433,19 @@ func main() {
 		SaveConfig: func(raw []byte) ([]string, error) {
 			configSaveMu.Lock()
 			defer configSaveMu.Unlock()
-			return saveConfig(raw, *cfgPath, live, p, up, sch, gw, pn, cfg)
+			fields, err := saveConfig(raw, *cfgPath, live, p, up, sch, gw, pn, cfg)
+			if err != nil {
+				return nil, err
+			}
+			if saved, loadErr := Load(*cfgPath); loadErr == nil {
+				updateManager.Configure(updater.Settings{
+					AutoEnabled: saved.Update.AutoEnabled,
+					AutoTime:    saved.Update.AutoTime,
+				})
+			} else if loadErr != nil {
+				log.Printf("WARN: reload update settings: %v", loadErr)
+			}
+			return fields, nil
 		},
 		// 积分历史账本（只读展示；写入由上面的余额观察者完成）。
 		CreditHistory: creditHist,
@@ -371,6 +465,7 @@ func main() {
 	if cfg.Admin.AuditEnabled {
 		al, aerr := server.NewAuditLog(cfg.Admin.AuditFile, cfg.APIKey)
 		if aerr != nil {
+			p.Flush() // Fatal 绕过 defer：至少把池状态落盘再退，否则丢整轮运行状态
 			log.Fatalf("admin audit: %v", aerr)
 		}
 		auditLog = al
@@ -389,7 +484,9 @@ func main() {
 		Usage:        rec,
 		RequestLog:   requestLog,
 		PromptMode:   cfg.Prompt.Mode,
-		PromptText:   cfg.PromptText,
+		// 模型降级路由表：读 live 快照（支持面板热更，改完即生效、无需重启）。
+		ModelFallback: func() map[string]string { return live.Load().ModelFallback },
+		PromptText:    cfg.PromptText,
 		// 来源记录开关经 livecfg 热生效；此处同时填静态字段，供 Live 为 nil 的
 		// 裸用/测试路径拿到同一缺省值。
 		RecordClientInfo: cfg.Logging.RequestClientInfo,
@@ -398,6 +495,8 @@ func main() {
 		// 模型黑名单原始条目；运行期以 livecfg 快照为准（热生效），此处供
 		// Live 为 nil 的裸用/测试路径。
 		ModelsHidden: cfg.Models.Hidden,
+		// 模型白名单原始条目（issue #68）；同上，运行期以 livecfg 快照为准。
+		ModelsAllowed: cfg.Models.Allowed,
 		// 模型映射原始条目（issue #30）；同上，运行期以 livecfg 快照为准。
 		ModelsAliases:    cfg.Models.Aliases,
 		AdminEnabled:     cfg.Admin.Enabled,
@@ -411,13 +510,18 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	updateManager.SetRestart(stop)
+	go updateManager.Run(ctx)
 	// 账号后台任务（taskjobs）：状态与主 state 同目录，重启后自动恢复未完成作业。
 	if err := pn.StartTaskJobs(ctx, stateSibling(cfg.StateFile, "task-jobs.json")); err != nil {
+		p.Flush() // Fatal 绕过 defer：至少把池状态落盘再退
 		log.Fatalf("task jobs: %v", err)
 	}
 	defer pn.StopTaskJobs()
 	pn.ResumeTaskJobs()
 	go sch.Run(ctx)
+	sch.SetJitter(cfg.Schedule.BalanceRefreshJitterPermill, cfg.Schedule.TaskSweepJitterPermill)
+	sch.SetNightAccountCap(cfg.Schedule.NightAccountCap)
 	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 	sch.StartTaskSweep(ctx, cfg.TaskSweepInterval)
 	if cfg.Alerting.Enabled {
@@ -465,17 +569,34 @@ func main() {
 		// （长流式生成合法时长可达数分钟，全局 WriteTimeout 会误杀在途 SSE）。
 		IdleTimeout: 120 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		p.Flush() // 信号触发：先落盘再做优雅停机
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// 在途请求排干窗口可配（server.shutdown_timeout，缺省 30s）：长流式 SSE
+		// 合法时长可达分钟级，固定 5s 必然把在途请求掐成连接重置；超时不再静默。
+		shutdownTimeout := cfg.ShutdownTimeoutDur
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 5 * time.Second
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("WARN: 优雅关停未在 %s 内完成，在途请求被放弃: %v", shutdownTimeout, err)
+		}
 	}()
 
+	if warn := insecureKeyWarning(cfg.Listen, cfg.APIKey); warn != "" {
+		log.Printf("WARN: %s", warn)
+	}
 	log.Print(listenBanner(cfg.Listen, loadedFrom, cfg.APIKey))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		p.Flush() // 监听失败时信号路径不会跑：这里同样兜底落盘再退
 		log.Fatalf("http: %v", err)
+	}
+	if ctx.Err() != nil {
+		<-shutdownDone
 	}
 	log.Printf("bye")
 }
@@ -662,15 +783,21 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	}
 
 	// 4) 热应用：能立即生效的字段全部应用，并列出仍需重启的字段。
+	// 白名单同步重建（issue #68）：面板保存 models.allowed 后即时生效。
+	newAllowedModels, newAllowlistEnabled := livecfg.NormalizeAllowedModels(newCfg.Models.Allowed)
 	live.Store(livecfg.Snapshot{
 		APIKey:               newCfg.APIKey,
 		SoftCooldown:         newCfg.SoftRateDur,
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
 		RecordClientInfo:     newCfg.Logging.RequestClientInfo,
 		HiddenModels:         livecfg.NormalizeHiddenModels(newCfg.Models.Hidden),
-		ModelAliases:         livecfg.NormalizeModelAliases(newCfg.Models.Aliases),
+		// 白名单热生效：与 HiddenModels 同一条快照重建通路（issue #68）。
+		AllowedModels:    newAllowedModels,
+		AllowlistEnabled: newAllowlistEnabled,
+		ModelAliases:     livecfg.NormalizeModelAliases(newCfg.Models.Aliases),
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
+	up.SanitizeBrandScope.Store(newCfg.Features.SanitizeBrandScope)
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)
@@ -682,6 +809,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	p.SetWeights(newCfg.Pool.IdleWeightPerHour, newCfg.Pool.IdleWeightMax)
 	p.SetPreferExpiring(newCfg.Pool.PreferExpiring, newCfg.ExpiringSoonDur)
 	sch.SetExpiringSoonWindow(newCfg.ExpiringSoonDur)
+	sch.SetKeepaliveRefreshWindow(newCfg.KeepaliveRefreshWindowDur)
 	p.SetReserveCredits(*newCfg.Pool.ReserveCredits)  // 保留积分热生效（0 = 关闭，缺省 10）
 	p.SetAccountPriority(newCfg.Pool.AccountPriority) // 账号优先级/占比热生效（issue #62）
 	p.SetAccountShare(newCfg.Pool.AccountShare)
@@ -707,6 +835,8 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	})
 	sch.SetBalanceInterval(newCfg.BalanceRefreshInterval)
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
+	sch.SetJitter(newCfg.Schedule.BalanceRefreshJitterPermill, newCfg.Schedule.TaskSweepJitterPermill)
+	sch.SetNightAccountCap(newCfg.Schedule.NightAccountCap)
 	if pn != nil {
 		pn.SetGrowthConcurrency(newCfg.Schedule.GrowthConcurrency) // 排程轮次并发热生效
 	}
@@ -770,6 +900,7 @@ func restartRequiredFields(current, next *Config) []string {
 	changed("logging.request_retention_days", current.Logging.RequestRetentionDays, next.Logging.RequestRetentionDays)
 	changed("logging.request_archive_max_mb", current.Logging.RequestArchiveMaxMB, next.Logging.RequestArchiveMaxMB)
 	changed("server.read_timeout", current.Server.ReadTimeout, next.Server.ReadTimeout)
+	changed("server.shutdown_timeout", current.Server.ShutdownTimeout, next.Server.ShutdownTimeout)
 	return out
 }
 

@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // FetchAccountProfile 拉取账号资料并返回最新昵称。uid 与凭证不一致时报错

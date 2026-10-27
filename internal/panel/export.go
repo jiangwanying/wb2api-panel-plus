@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // exportedAccount 导出快照中的单个账号（cockpit 兼容字段 + 本仓扩展）。

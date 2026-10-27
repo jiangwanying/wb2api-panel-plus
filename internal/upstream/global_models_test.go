@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestGlobalCatalogProbesDesktopUA 锁定「/v3/config 目录按 UA 家族分档」这一上游事实：

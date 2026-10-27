@@ -5,10 +5,16 @@
   "state_file": "./data/state.json",
   "dns_servers": [],
   "server": {
-    "read_timeout": "300s"
+    "read_timeout": "300s",
+    "shutdown_timeout": "30s"
   },
   "panel": {
-    "package_detail_limit": 5
+    "package_detail_limit": 5,
+    "poll_interval_sec": 0
+  },
+  "update": {
+    "auto_enabled": false,
+    "auto_time": "04:00"
   },
   "logging": {
     "request_archive_enabled": true,
@@ -21,26 +27,13 @@
     "soft_rate_max": "2h"
   },
   "schedule": {
-    "checkin_hours": [
-      9,
-      21
-    ],
-    "travel_hours": [
-      9,
-      21
-    ],
-    "activity_hours": [
-      10
-    ],
-    "keepalive_hours": [
-      22
-    ],
-    "blackcat_hours": [
-      23
-    ],
-    "growth_hours": [
-      11
-    ],
+    "checkin_hours": [9, 21],
+    "travel_hours": [9, 21],
+    "activity_hours": [10],
+    "keepalive_hours": [22],
+    "keepalive_refresh_window": "168h",
+    "blackcat_hours": [23],
+    "growth_hours": [11],
     "checkin_enabled": true,
     "travel_enabled": true,
     "activity_enabled": true,
@@ -53,7 +46,10 @@
     "account_spread_min_gap_seconds": 0,
     "balance_refresh_enabled": true,
     "balance_refresh_minutes": 5,
-    "include_disabled_in_tasks": false
+    "include_disabled_in_tasks": false,
+    "balance_refresh_jitter_permill": 0,
+    "task_sweep_jitter_permill": 0,
+    "night_account_cap": 0
   },
   "global": {
     "enabled": true,
@@ -78,11 +74,13 @@
     "dump_max_bytes": 0
   },
   "features": {
-    "sanitize_blacklist_fingerprints": true
+    "sanitize_blacklist_fingerprints": true,
+    "sanitize_brand_scope": "all"
   },
   "models": {
-    "_comment": "hidden: 不对外暴露的模型黑名单。裸名=两域都藏；\"cn:xxx\"/\"global:xxx\"=只藏该域。/v1/models 列表过滤 + chat 点名拒绝，面板保存后热生效。",
-    "hidden": []
+    "_comment": "hidden: 不对外暴露的模型黑名单。裸名=两域都藏；\"cn:xxx\"/\"global:xxx\"=只藏该域。/v1/models 列表过滤 + chat 点名拒绝，面板保存后热生效。allowed: 模型白名单（issue #68），条目语法同 hidden；空数组 = 不启用（默认放行全部）；非空时仅白名单内模型可列出与调用，与 hidden 共存取交集。",
+    "hidden": [],
+    "allowed": []
   },
   "prompt": {
     "mode": "passthrough",
@@ -110,7 +108,7 @@
     "cost_explore_interval": "30m",
     "credit_floor": 100,
     "reserve_credits": 10,
-    "cross_domain_fallback": false
+    "model_fallback": {}
   },
   "session_sticky": {
     "enabled": true,
@@ -122,14 +120,8 @@
     "audit_enabled": false,
     "audit_file": "./data/admin_audit.log"
   },
-  "metrics": {
-    "enabled": false
-  },
-  "budget": {
-    "daily_credit_limit": 0,
-    "burst_credit_limit": 0,
-    "cache_low_rate": 0
-  },
+  "metrics": { "enabled": false },
+  "budget": { "daily_credit_limit": 0, "burst_credit_limit": 0, "cache_low_rate": 0 },
   "alerting": {
     "enabled": false,
     "webhook_url": "",

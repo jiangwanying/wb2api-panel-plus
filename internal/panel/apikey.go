@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // apiKeyUIDMaxLen 派生/显式 uid 的长度上限（与 validImportUID 同口径：拼文件名的兜底）。

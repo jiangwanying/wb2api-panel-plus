@@ -3,7 +3,7 @@ package pool
 import (
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestStatusExposesEnterpriseFlag 面板需要 per-account 的「是否企业版」来决定

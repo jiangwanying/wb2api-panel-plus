@@ -1,13 +1,125 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
+
+// quotaLockBody 上游 6004「使用量已超出频率限制」的真实形态（带重置墙钟）。
+const quotaLockBody = `{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-10-25 23:00:00 重置","requestId":"rq-quota"}`
+
+// TestChatModelQuotaLockedReturns429 全池该模型都被 6004 用量配额锁住时，回 429 +
+// 上游业务码 + 上游原文，且**不带 Retry-After**：重置前重试必然同样失败，客户端
+// 该立刻报错（换模型/等额度），而不是按 Retry-After 静默睡到解锁（codebuddy CLI
+// 直接 delayMs = retry-after×1000，20 分钟的冷却就变成 20 分钟挂起）。
+func TestChatModelQuotaLockedReturns429(t *testing.T) {
+	p := testPoolWith(
+		&auth.Auth{UID: "q1", AccessToken: "at-q1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "q2", AccessToken: "at-q2", ExpiresAt: 9999999999},
+	)
+	reset := time.Now().Add(20 * time.Minute)
+	for _, uid := range []string{"q1", "q2"} {
+		p.CooldownSoftForModel(uid, time.Minute, reset, "glm-5.2", quotaLockBody)
+	}
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		t.Errorf("全池配额锁时不应打上游，auth=%q", authz)
+		return 500, "", false
+	})
+	h := NewHandler(Config{Pool: p, Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != 429 {
+		t.Fatalf("code=%d body=%s (want 429)", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Errorf("配额锁不该发 Retry-After（客户端会照睡到解锁），got %q", got)
+	}
+	var resp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad response JSON: %v body=%s", err, rec.Body)
+	}
+	if resp.Error.Code != 6004 {
+		t.Errorf("error.code=%d want 6004（数字业务码，客户端据此判不可重试）", resp.Error.Code)
+	}
+	if resp.Error.Type != "insufficient_quota" {
+		t.Errorf("error.type=%q want insufficient_quota", resp.Error.Type)
+	}
+	if !strings.Contains(resp.Error.Message, "您的使用量已超出频率限制") {
+		t.Errorf("message 应透传上游原文，got %q", resp.Error.Message)
+	}
+	if strings.Contains(rec.Body.String(), "model_busy") {
+		t.Errorf("配额锁不该报成 model_busy（那是可重试语义）：%s", rec.Body)
+	}
+}
+
+// TestChatModelQuotaMixedWithBusyKeeps503 只有**全池同因**（都是配额）才算配额锁：
+// 混进 14003（瞬时繁忙，等就有）时仍走可重试的 503——不能因为有一个号配额耗尽，
+// 就把"再等一分钟就能用"判成"别重试"。
+func TestChatModelQuotaMixedWithBusyKeeps503(t *testing.T) {
+	p := testPoolWith(
+		&auth.Auth{UID: "q1", AccessToken: "at-q1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "q2", AccessToken: "at-q2", ExpiresAt: 9999999999},
+	)
+	p.CooldownSoftForModel("q1", time.Minute, time.Now().Add(20*time.Minute), "glm-5.2", quotaLockBody)
+	p.CooldownSoftForModel("q2", time.Minute, time.Now().Add(time.Minute), "glm-5.2", "14003 model busy")
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		t.Errorf("模型级阻塞时不应打上游，auth=%q", authz)
+		return 500, "", false
+	})
+	h := NewHandler(Config{Pool: p, Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != 503 {
+		t.Fatalf("code=%d body=%s (want 503 model_busy)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "model_busy") {
+		t.Errorf("混锁时不该按配额 429 报：%s", rec.Body)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Error("可重试的 503 应带 Retry-After")
+	}
+}
+
+// TestChatModelBusyRetryAfterCapped 14003（瞬时繁忙）仍走 503 + Retry-After，但头上限
+// 600s：CLI 把该头当 delayMs 直接睡，冷却很长时不能把真实剩余时间原样报出去。
+func TestChatModelBusyRetryAfterCapped(t *testing.T) {
+	p := testPoolWith(&auth.Auth{UID: "b1", AccessToken: "at-b1", ExpiresAt: 9999999999})
+	p.CooldownSoftForModel("b1", time.Minute, time.Now().Add(time.Hour), "glm-5.2", "14003 model busy")
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		t.Errorf("模型繁忙冷却时不应打上游，auth=%q", authz)
+		return 500, "", false
+	})
+	h := NewHandler(Config{Pool: p, Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != 503 {
+		t.Fatalf("code=%d body=%s (want 503 model_busy)", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "600" {
+		t.Errorf("Retry-After=%q want 600（封顶 10 分钟）", got)
+	}
+	if !strings.Contains(rec.Body.String(), "model_busy") {
+		t.Errorf("应保持 model_busy：%s", rec.Body)
+	}
+}
 
 // TestChatModelBlockedReportsModelUnavailable 池里号都在、只是每个号都对该模型处于
 // 模型级冷却（11102/6004）时，客户端必须看到 400 model_unavailable + 本地调度信息，

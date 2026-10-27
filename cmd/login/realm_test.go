@@ -2,9 +2,19 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jiangwanying/wb2api-panel-plus/internal/loginsite"
 )
 
 // TestParseRealmArgs 覆盖 --realm 参数解析：缺省 cn、等号/分离式写法、
@@ -44,6 +54,167 @@ func TestParseRealmArgs(t *testing.T) {
 				t.Errorf("rest=%v want %v", rest, c.wantRest)
 			}
 		})
+	}
+}
+
+// TestParseSiteArgs 覆盖 --site 解析：显式 --site 优先于 --realm，未知值报错，
+// 缺省/无参回落国内站；同时确认 --site/--realm 都被剥离，子命令留在 rest。
+func TestParseSiteArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantID   string
+		wantRest []string
+		wantErr  bool
+	}{
+		{name: "缺省 cn", args: []string{"url"}, wantID: "cn", wantRest: []string{"url"}},
+		{name: "site=intl", args: []string{"--site=intl", "url"}, wantID: "intl", wantRest: []string{"url"}},
+		{name: "site=workbuddy 分离式", args: []string{"--site", "workbuddy", "poll"}, wantID: "workbuddy", wantRest: []string{"poll"}},
+		{name: "site 大小写归一", args: []string{"--site=INTL", "url"}, wantID: "intl", wantRest: []string{"url"}},
+		// --site 优先：老脚本同时传两个也不冲突。
+		{name: "site 优先于 realm", args: []string{"--site=intl", "--realm=cn", "url"}, wantID: "intl", wantRest: []string{"url"}},
+		// 只传 realm 时保持历史语义（global → workbuddy 旧桌面端）。
+		{name: "realm=global 映射旧桌面端", args: []string{"--realm=global", "url"}, wantID: "workbuddy", wantRest: []string{"url"}},
+		{name: "realm=cn", args: []string{"--realm=cn", "url"}, wantID: "cn", wantRest: []string{"url"}},
+		{name: "未知 site 报错", args: []string{"--site=global", "url"}, wantErr: true},
+		{name: "site 缺值报错", args: []string{"--site"}, wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			site, rest, err := parseSiteArgs(c.args)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("parseSiteArgs(%v) err=nil, want error", c.args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSiteArgs(%v) err=%v", c.args, err)
+			}
+			if site.ID != c.wantID {
+				t.Errorf("site.ID=%q want %q", site.ID, c.wantID)
+			}
+			if !reflect.DeepEqual(rest, c.wantRest) {
+				t.Errorf("rest=%v want %v", rest, c.wantRest)
+			}
+		})
+	}
+}
+
+// TestRunURLDecoratesAuthURL 覆盖 url 子命令的输出：授权链接必须带官方 version
+// 参数（对齐 CLI appendAuthUrlParams），且 state 落盘带 realm+site 供 poll 校验。
+func TestRunURLDecoratesAuthURL(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v2/plugin/auth/state") {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("platform"); got != "CLI" {
+			t.Errorf("platform=%q want CLI", got)
+		}
+		// 授权 URL 用测试服务器自身地址，便于断言参数。
+		base := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"code":0,"msg":"OK","data":{"state":"st-1","authUrl":"%s/login?platform=CLI&state=st-1"}}`, base)
+	}))
+	defer srv.Close()
+
+	// 用自定义站点指向测试服务器（真实站点表不便打外网）。
+	site := loginsite.For(loginsite.SiteIntl)
+	site.API = srv.URL
+	site.Origin = srv.URL
+
+	var out bytes.Buffer
+	runURL(site, statePath, srv.Client(), &out)
+
+	got := strings.TrimSpace(out.String())
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("解析授权 URL 失败 %q: %v", got, err)
+	}
+	if v := u.Query().Get("version"); v != loginsite.ClientVersion {
+		t.Errorf("授权 URL 缺 version（或值不符）：%q", got)
+	}
+	if s := u.Query().Get("state"); s != "st-1" {
+		t.Errorf("state=%q want st-1", s)
+	}
+
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("state 未落盘: %v", err)
+	}
+	var ls loginState
+	if err := json.Unmarshal(raw, &ls); err != nil {
+		t.Fatalf("state 解析失败: %v", err)
+	}
+	if ls.State != "st-1" || ls.Realm != "global" || ls.Site != "intl" {
+		t.Errorf("state={state:%s realm:%s site:%s} want {st-1 global intl}", ls.State, ls.Realm, ls.Site)
+	}
+}
+
+// TestRunPollFatalCode 覆盖 poll 的终态码处理：上游返回 12005（席位满）时必须
+// 直接退出并给出上游 msg，而不是报「登录未完成」让用户反复重按 y。
+func TestRunPollFatalCode(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"state":"st-1","realm":"cn","site":"cn"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"code":12005,"msg":"license seat limit reached"}`)
+	}))
+	defer srv.Close()
+
+	site := loginsite.For(loginsite.SiteCN)
+	site.API = srv.URL
+	site.Origin = srv.URL
+
+	// 捕获 fatal（exitFunc 换成 panic，与既有 realm_test 的用法一致）。
+	var msg string
+	oldExit := exitFunc
+	exitFunc = func(code int) { panic("exit") }
+	defer func() { exitFunc = oldExit }()
+	// fatal 写 stderr，这里只看 panic 是否发生。
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = "fatal"
+			}
+		}()
+		runPoll(site, statePath, srv.Client(), io.Discard)
+	}()
+	if msg != "fatal" {
+		t.Fatal("12005 应触发 fatal 退出，实际未退出（会被误当成「登录未完成」）")
+	}
+}
+
+// TestRunPollSiteMismatch 覆盖防换站：state 文件记录的站点与本次 --site 不一致时
+// 必须拒绝（国际域两套主机名同后端，混用会把请求打到非签发域）。
+func TestRunPollSiteMismatch(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"state":"st-1","realm":"global","site":"workbuddy"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldExit := exitFunc
+	exitFunc = func(code int) { panic("exit") }
+	defer func() { exitFunc = oldExit }()
+
+	var fatal bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fatal = true
+			}
+		}()
+		runPoll(loginsite.For(loginsite.SiteIntl), statePath, http.DefaultClient, io.Discard)
+	}()
+	if !fatal {
+		t.Fatal("site 不一致应拒绝，实际继续执行了")
 	}
 }
 

@@ -36,8 +36,6 @@ docs/
 *.md
 !README.md
 !AGENTS.md
-# go:embed 资源（*.md 规则会误伤，必须显式放行）
-!internal/prompt/defaultprompt.md
 
 # Windows binaries
 /wb2api.exe
@@ -50,3 +48,7 @@ docs/
 /capture/
 *.zip
 server.exe
+
+# 编译产物（16MB 误提交过一次，20261021）
+/server
+/app.toml

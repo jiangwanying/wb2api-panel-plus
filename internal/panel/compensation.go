@@ -14,7 +14,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/scheduler"
 )
 
 // compensation GET /panel/api/compensation：只读查全部账号的补偿状态。

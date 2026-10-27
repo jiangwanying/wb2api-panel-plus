@@ -855,6 +855,14 @@ readLoop:
 					if _, hasErr := probe["error"]; hasErr {
 						return &HeadVetoError{Payload: payload}
 					}
+					// 流内失败帧（HTTP 200 内嵌顶层 {code,msg}，无 choices；判据同
+					// writeFrame 的 StreamErrorFrame）：首帧即失败同样否决换号——否则
+					// 响应头一旦提交，可重试的失败（11140 审核拦截、6021 队列满）就只能
+					// 以「200 + error 帧」透给客户端。payload 改写成标准 error 帧后再带出，
+					// FrameKind 与末端错误映射的口径和 writeFrame 的透出形态一致。
+					if code, msg, ok := StreamErrorFrame(probe); ok {
+						return &HeadVetoError{Payload: streamErrorPayload(code, msg, payload)}
+					}
 				}
 			}
 			n, werr := writeFrame(payload)

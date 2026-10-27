@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // dumpLimit 单文件封顶：请求体 + 响应体合计。

@@ -20,6 +20,54 @@ func TestDefault(t *testing.T) {
 	if c.SoftRateDur.Seconds() != 600 {
 		t.Errorf("soft=%v want 600s", c.SoftRateDur)
 	}
+	if c.Update.AutoEnabled {
+		t.Error("update.auto_enabled default should be false")
+	}
+	if c.Update.AutoTime != "04:00" {
+		t.Errorf("update.auto_time=%q want 04:00", c.Update.AutoTime)
+	}
+}
+
+func TestUpdateAutoTimeValidation(t *testing.T) {
+	for _, value := range []string{"4:00", "+0:00", "24:00", "12:60", "noon"} {
+		if _, err := ParseConfig([]byte(`{"update":{"auto_time":"` + value + `"}}`)); err == nil {
+			t.Fatalf("auto_time %q should be rejected", value)
+		}
+	}
+	for _, value := range []string{"00:00", "04:00", "23:59"} {
+		c, err := ParseConfig([]byte(`{"update":{"auto_time":"` + value + `"}}`))
+		if err != nil || c.Update.AutoTime != value {
+			t.Fatalf("auto_time %q parse failed: cfg=%+v err=%v", value, c, err)
+		}
+	}
+}
+
+// TestPanelPollInterval 面板自动刷新间隔：0 = 缺省、负数 = 关闭自动刷新。
+// normalize **不得**把负数回落成 0（那会把「关闭」变成「5 秒」）。
+func TestPanelPollInterval(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if c.Panel.PollIntervalSec != 0 {
+		t.Fatalf("缺省 poll_interval_sec=%d want 0（= 前端缺省 5s）", c.Panel.PollIntervalSec)
+	}
+
+	off, err := ParseConfig([]byte(`{"panel":{"poll_interval_sec":-1}}`))
+	if err != nil {
+		t.Fatalf("parse off: %v", err)
+	}
+	if off.Panel.PollIntervalSec != -1 {
+		t.Fatalf("poll_interval_sec=%d want -1（关闭自动刷新，normalize 不得回落）", off.Panel.PollIntervalSec)
+	}
+
+	slow, err := ParseConfig([]byte(`{"panel":{"poll_interval_sec":60}}`))
+	if err != nil {
+		t.Fatalf("parse slow: %v", err)
+	}
+	if slow.Panel.PollIntervalSec != 60 {
+		t.Fatalf("poll_interval_sec=%d want 60", slow.Panel.PollIntervalSec)
+	}
 }
 
 func TestPanelPackageDetailLimit(t *testing.T) {
@@ -661,6 +709,51 @@ func TestTaskSweepDefaults(t *testing.T) {
 	}
 }
 
+// TestKeepaliveRefreshWindow checks defaults, explicit durations, and invalid values.
+func TestKeepaliveRefreshWindow(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Schedule.KeepaliveRefreshWindow != "168h" || c.KeepaliveRefreshWindowDur != 168*time.Hour {
+		t.Fatalf("default keepalive window=%q/%v want 168h", c.Schedule.KeepaliveRefreshWindow, c.KeepaliveRefreshWindowDur)
+	}
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{"keepalive_refresh_window":"24h"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.KeepaliveRefreshWindowDur != 24*time.Hour {
+		t.Fatalf("explicit keepalive window=%v want 24h", c2.KeepaliveRefreshWindowDur)
+	}
+
+	// 老 config 没这个键：缺键必须回落到默认，不能报错。
+	if err := os.WriteFile(fp, []byte(`{"schedule":{"keepalive_hours":[22]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c3, err := Load(fp)
+	if err != nil {
+		t.Fatalf("缺键不应报错: %v", err)
+	}
+	if c3.KeepaliveRefreshWindowDur != 168*time.Hour {
+		t.Errorf("缺键窗口=%v want 168h", c3.KeepaliveRefreshWindowDur)
+	}
+
+	for _, raw := range []string{"0s", "-1h", "not-a-duration"} {
+		if err := os.WriteFile(fp, []byte(`{"schedule":{"keepalive_refresh_window":"`+raw+`"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(fp); err == nil {
+			t.Errorf("keepalive_refresh_window=%q should be rejected", raw)
+		}
+	}
+}
+
 func TestBalanceRefreshDefaults(t *testing.T) {
 	// 缺省：启用 + 30 分钟
 	c := Default()
@@ -966,5 +1059,41 @@ func TestDNSServersConfigAndEnv(t *testing.T) {
 	}
 	if len(c3.DNSServers) != 0 {
 		t.Fatalf("缺省应为空（系统解析器）：%v", c3.DNSServers)
+	}
+}
+
+func TestPeriodicJitterPermillConfig(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	os.WriteFile(fp, []byte(`{"listen":":9999","api_key":"k","schedule":{"balance_refresh_jitter_permill":200,"task_sweep_jitter_permill":300}}`), 0o600)
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Schedule.BalanceRefreshJitterPermill != 200 || c.Schedule.TaskSweepJitterPermill != 300 {
+		t.Fatalf("c.Schedule=%+v", c.Schedule)
+	}
+
+	// 超上限拒绝（上限 500 = 50%）。
+	os.WriteFile(fp, []byte(`{"listen":":9999","api_key":"k","schedule":{"balance_refresh_jitter_permill":501}}`), 0o600)
+	if _, err := Load(fp); err == nil {
+		t.Fatal("want error for jitter_permill > 500")
+	}
+
+	// 负数拒绝。
+	os.WriteFile(fp, []byte(`{"listen":":9999","api_key":"k","schedule":{"task_sweep_jitter_permill":-1}}`), 0o600)
+	if _, err := Load(fp); err == nil {
+		t.Fatal("want error for negative jitter_permill")
+	}
+
+	// env 覆盖。
+	t.Setenv("WB2A_SCHEDULE_BALANCE_REFRESH_JITTER_PERMILL", "250")
+	t.Setenv("WB2A_SCHEDULE_TASK_SWEEP_JITTER_PERMILL", "100")
+	c2, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Schedule.BalanceRefreshJitterPermill != 250 || c2.Schedule.TaskSweepJitterPermill != 100 {
+		t.Fatalf("env override: %+v", c2.Schedule)
 	}
 }

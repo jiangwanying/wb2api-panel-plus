@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // mkPool 建一个 n 号池，uid = u0..u(n-1)，余额从左到右递减（模拟"有的号积分多、有的少"）。

@@ -7,15 +7,19 @@
 // {created,data:[{url}],usage{...,credit}}，图是签名 COS 直链（约 24h 有效）——网关只拆
 // 信封，不转存字节。edits 多一个 image（data URL 数组）。
 //
-// 模型名按 realm 不同，**计费模型也完全不同**（2026-10-18 复测）：
+// 模型名按 realm 不同，**计费模型也完全不同**（2026-10-22 复测，两个个人号直连上游）：
 //
 //	cn     hunyuan-image-alpha   每张固定 5.71 credit。512/1024/1536 三档尺寸、n=1/2
 //	                             四次回执全为 5.71（output_tokens 却在 693–1118 间跳），
-//	                             说明与尺寸/token/张数都无关；目录牌价是 x5.00，比实扣
-//	                             低 14%（牌价不等于实扣，面板两个都要显示）。
-//	global gpt-image-2.5-sunburst 按**输出图像 token** 计费：credit = tokens / 7300
-//	                             （1024² low: 0.55 / 3997 tokens；1024² high: 4.84 / 35333）。
-//	                             目录里不报 credits，故没有"每张一个价"可言。
+//	                             说明与尺寸/token/张数都无关；回执带
+//	                             output_image_coefficient:1。目录 2026-10-18 曾报牌价
+//	                             x5.00（比实扣低 14%），2026-10-22 复测已不再报 credits。
+//	global hy-image-3.5          每张固定 0.27 credit。low/medium/high × 512/1024/1536
+//	                             六档实测同价，回执恒 output_image_tokens:15000 却**不带**
+//	                             coefficient——token 数不代表单价，按 token 反推价格会算错。
+//	global gpt-image-2.5-sunburst **已下架**：400 code=14401 route config not found。
+//	                             当年按输出图像 token 计费（credit = tokens/7300：1024²
+//	                             low 0.55/3997、high 4.84/35333），该口径仅作存档。
 package upstream
 
 import (
@@ -24,7 +28,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // 图像通道（chatBase 域，与 growth/report 同 base 同头）。
@@ -46,11 +50,16 @@ func (c *Client) ImageEdits(a *auth.Auth, body any) (json.RawMessage, error) {
 
 // ImageChargeAgg 出图实扣按「尺寸 × 画质」分档的聚合（见 RecordImageCharge）。
 //
-// 为什么需要分档：两个域的计费模型完全不同，混成一个均值会骗人——
+// 为什么需要分档：不同（或不同代）图片模型的计费口径可能完全不同，混成一个均值会骗人：
 //
-//	global gpt-image-2.5-sunburst：按**输出图像 token** 计费（实测 credit = tokens/7300：
-//	  1024² low = 0.55 / 3997 tokens，1024² high = 4.84 / 35333 tokens，差 8.8 倍）；
-//	cn hunyuan-image-alpha：**每张固定 5.71**，与尺寸/画质/n 全无关（4 次复测恒等）。
+//	cn hunyuan-image-alpha：**每张固定 5.71**，与尺寸/画质/n 全无关，回执带
+//	  output_image_coefficient:1（2026-10-22 复测 1024/768/512 三档 + n=2 恒等）；
+//	global hy-image-3.5：**每张固定 0.27**，回执恒为 output_image_tokens:15000，
+//	  回执不带 coefficient；low/medium/high 与 512/1024/1536 六档实测全部 0.27；
+//	global gpt-image-2.5-sunburst（**已下架**，14401 route config not found）：
+//	  当年按输出图像 token 计费（credit = tokens/7300，low 0.55/3997、high 4.84/35333）。
+//
+// 分档仍然保留：它是「这价是哪一档」的唯一凭据，且一旦上游改回按档计价就能直接读出。
 //
 // 所以面板必须知道某个均值是「哪一档」的平均，否则 0.55 一旦参进 high 样本就再也
 // 对不上任何一档真实价格。
@@ -63,9 +72,13 @@ type ImageChargeAgg struct {
 	Samples int     `json:"samples"`
 	Credits float64 `json:"credits"`
 	Avg     float64 `json:"avg"`
-	// Last 最近一次的实扣与输出图像 token（global 侧据 token 反推单价用）。
-	Last        float64 `json:"last"`
-	LastTokens  int64   `json:"last_output_image_tokens,omitempty"`
+	// Last 最近一次的实扣与输出图像 token（反推单价用）。
+	Last       float64 `json:"last"`
+	LastTokens int64   `json:"last_output_image_tokens,omitempty"`
+	// LastCoefficient 最近一次的 usage.output_image_coefficient（上游给的「倍率」
+	// 原值，CN 恒 1、global 不回该字段）。只展示：它是上游自己的口径，本网关
+	// 不拿它重算价格——重算出来的数跟回执 credit 对不上就是二次编数。
+	LastCoefficient float64 `json:"last_output_image_coefficient,omitempty"`
 	LastAt      string  `json:"last_at,omitempty"`
 }
 
@@ -83,7 +96,7 @@ func imageChargeKey(realm, model, size, quality string) string {
 // RecordImageCharge 记录一次出图实扣（数量取上游回执 usage.credit）。
 // tokens 为 usage.output_image_tokens（CN 侧不回该字段，记 0）。
 // 只在 credit > 0 时调用（上游省略 usage 时不编数）。
-func (c *Client) RecordImageCharge(realm, model, size, quality string, credit float64, tokens int64) {
+func (c *Client) RecordImageCharge(realm, model, size, quality string, credit float64, tokens int64, coefficient float64) {
 	if c == nil || model == "" || credit <= 0 {
 		return
 	}
@@ -107,6 +120,9 @@ func (c *Client) RecordImageCharge(realm, model, size, quality string, credit fl
 	agg.Last = credit
 	if tokens > 0 {
 		agg.LastTokens = tokens
+	}
+	if coefficient > 0 {
+		agg.LastCoefficient = coefficient
 	}
 	agg.LastAt = time.Now().Format(time.RFC3339)
 	c.imageCharges[key] = agg
@@ -201,11 +217,28 @@ func sortedInfos(byID map[string]ModelInfo) []ModelInfo {
 // hunyuan-image-alpha，但国际侧调它必回 400 code=14401「route config not found」。列进
 // /v1/models 等于引诱客户端选一个必然失败的模型（客户端枚举列表即踩）。
 //
+// 2026-10-22 复测（两个个人号，直连上游）：
+//   cn:hunyuan-image-alpha 200 → usage{output_image_coefficient:1, credit:5.71}
+//   global:hy-image-3.5    200 → usage{output_image_tokens:15000, credit:0.27}
+//   global:gpt-image-2.5-sunburst → **400 code=14401 route config not found**
+//     （已下架；两个域的目录里都不再有它，global 目录把可用出图模型只放在
+//     modelPromotions 里，见 fetchV3ConfigModelMap 的补入逻辑）
+// 所以 sunburst 这条映射已作废：留着只会把一个必失败的模型列给客户端。
+//
 // ponytail: 只写实测过的组合，未知模型照旧列出（不猜）；图像模型变多时改成探测一次路由
-// 并缓存——现在只有两个模型，加探测是白花钱。
+// 并缓存——现在只有这几个模型，加探测是白花钱。
 var imageRouteRealm = map[string]string{
-	"hunyuan-image-alpha":    "cn",
-	"gpt-image-2.5-sunburst": "global",
+	"hunyuan-image-alpha":      "cn",
+	"hunyuan-image-alpha-edit": "cn",
+	"hy-image-3.5":             "global",
+}
+
+// imageDeadModels 上游已下架、两个域都没有路由的出图模型：列出来只会让客户端
+// 选到一个必然 400 的模型。实测 2026-10-22：global:gpt-image-2.5-sunburst
+// → 400 code=14401「route config not found」，且两域目录里都已不再出现它。
+// 只写实测下架的；模型回来时删一行即可（未知模型照旧列出，见 GenerationModels）。
+var imageDeadModels = map[string]bool{
+	"gpt-image-2.5-sunburst": true,
 }
 
 // GenerationModels 最近一次目录解析留存的出图/出视频模型（空 = 尚未探测过该域）。
@@ -217,6 +250,10 @@ func (c *Client) GenerationModels(realm string) []ModelInfo {
 	src := c.imageModels[realm]
 	out := make([]ModelInfo, 0, len(src))
 	for _, m := range src {
+		// 已下架的模型不列（见 imageDeadModels）。
+		if imageDeadModels[m.ID] {
+			continue
+		}
 		// 已知在别的域才有路由的模型不列（见 imageRouteRealm）。
 		if r, known := imageRouteRealm[m.ID]; known && r != realm {
 			continue

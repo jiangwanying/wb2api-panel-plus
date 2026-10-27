@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestNoteSessionDeadThresholdNotReached 前 2 次连续 12153 不 Disable（误判防护）。
@@ -103,6 +103,34 @@ func TestNoteSuccessClearsSessionDeadCount(t *testing.T) {
 	p.NoteSuccess("u1")
 	if p.NoteSessionDead("u1") {
 		t.Fatal("成功清计数后第 1 次不应禁用")
+	}
+}
+
+// TestSessionDeadCountPersists 中间计数与清零点都落盘：重启后既不丢「已吃 2 次失败」
+// 的进度，也不残留已清零的旧计数（entry.go 持久化注释的兑现）。此前只有达到阈值的
+// Disable 落盘，阈值内的 +1 与 ClearSessionDead 的清零都不置脏——清零不落盘会让
+// 刚被 refresh 证明存活的账号在重启后带着旧计数，下一次失败直接被推到阈值禁用。
+func TestSessionDeadCountPersists(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "state.json")
+	p := New(fp)
+	p.Add(&auth.Auth{UID: "u1"})
+	p.NoteSessionDead("u1")
+	p.NoteSessionDead("u1")
+	p.Flush()
+
+	p2 := New(fp)
+	p2.Add(&auth.Auth{UID: "u1"})
+	if st, _ := p2.Status("u1"); st.SessionDeadFails != 2 {
+		t.Fatalf("重启后应保留中间计数 2, got %d", st.SessionDeadFails)
+	}
+	p2.ClearSessionDead("u1")
+	p2.Flush()
+
+	p3 := New(fp)
+	p3.Add(&auth.Auth{UID: "u1"})
+	if st, _ := p3.Status("u1"); st.SessionDeadFails != 0 {
+		t.Fatalf("清零应落盘, got %d", st.SessionDeadFails)
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // CN 模型目录拉取失败必须留下一行 WARN（此前静默，排障无线索），且负缓存期内

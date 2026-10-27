@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // fakeContinueUpstream 按调用次数返回脚本化 SSE 并记录每次实际发出的请求体。

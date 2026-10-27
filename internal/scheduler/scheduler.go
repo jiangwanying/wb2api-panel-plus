@@ -12,12 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/cst"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/balance"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/cst"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/pool"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/session"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // Config 调度器依赖。
@@ -25,9 +26,12 @@ import (
 // 任务开关用「禁用」命名而非「启用」：零值 Config 即各类任务都启用（hours 回落默认），
 // 与引入开关前的行为逐字一致（老调用方/老测试无需改动）。
 type Config struct {
-	Pool           *pool.Pool
-	Upstream       *upstream.Client
-	CheckinHours   []int // 默认 [9, 21]
+	Pool         *pool.Pool
+	Upstream     *upstream.Client
+	CheckinHours []int // 默认 [9, 21]
+	// Balance 余额采样记录器（可为 nil = 不采样）。
+	// 采样动作挂在 RunBalanceRefreshNow 之后：那里已拿到新鲜余额，不额外打上游。
+	Balance        *balance.Recorder
 	TravelHours    []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
 	ActivityHours  []int // 默认 [10]
 	KeepaliveHours []int // 默认 [22]
@@ -38,6 +42,12 @@ type Config struct {
 	// <= now+window 的套餐余额标记为"快过期"（pool 据此做最早到期优先，见
 	// entry.creditsEarliestExpiry）。<=0 时不做路由门槛；展示仍使用完整逐包数据。
 	ExpiringSoonWindow time.Duration
+
+	// KeepaliveRefreshWindow 周期保活的临期窗口：排程到点的 token 保活只刷新
+	// NeedsRefresh(window) 为真的账号（剩余有效期 <= window，或已过期/无 expiry），
+	// 避免每天对全部账号轮换 refresh token。面板手动「全部保活」（RunKeepaliveNow）
+	// 不受本窗口影响，始终全量刷新。0 = 未配置（New 回落默认 7 天）。
+	KeepaliveRefreshWindow time.Duration
 
 	// CheckinDisabled 显式关闭签到排程（对应 config 的 schedule.checkin_enabled=false）。
 	// 禁用后不再有任何签到时点。旅行不再搭签到便车（已剥离为独立排程）。
@@ -102,6 +112,16 @@ type Scheduler struct {
 	balanceInterval atomic.Int64
 	sweepInterval   atomic.Int64
 
+	// balanceJitter/sweepJitter 周期抖动比例（千分比 0-500 = 0-50%，atomic 读写）。
+	// >0 时余额刷新/补领清扫的下一轮间隔在 ±frac×interval 内随机偏移（见 humanize.go），
+	// 不再精确固定间隔打卡。余额刷新另把账号遍历摊开（spreadStaggerDelay）。
+	balanceJitter atomic.Int64
+	sweepJitter   atomic.Int64
+
+	// nightAccountCap 夜间任务参与上限（>0 = 只让积分最高的前 N 个号参加夜猫子）。
+	// atomic 读写，Reconfigure 可热改。0 = 不限（旧行为）。
+	nightAccountCap atomic.Int64
+
 	// compGuardMu/compGuard 补偿「本期已试过」记账（key = uid + "|" + end_time）。
 	//
 	// 为什么需要：上游 compensation-status 的 claimed 字段**恒为 false**（2026-10-20 实测，
@@ -143,6 +163,9 @@ func New(cfg Config) *Scheduler {
 	}
 	if len(cfg.GrowthHours) == 0 {
 		cfg.GrowthHours = []int{11}
+	}
+	if cfg.KeepaliveRefreshWindow == 0 {
+		cfg.KeepaliveRefreshWindow = 7 * 24 * time.Hour
 	}
 	return &Scheduler{
 		cfg:           cfg,
@@ -200,6 +223,21 @@ func (s *Scheduler) SetExpiringSoonWindow(d time.Duration) {
 	if changed && poolRef != nil {
 		poolRef.ClearExpiringSnapshots()
 	}
+}
+
+// keepaliveRefreshWindow 返回周期保活的临期窗口（配置快照）。
+func (s *Scheduler) keepaliveRefreshWindow() time.Duration {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.cfg.KeepaliveRefreshWindow
+}
+
+// SetKeepaliveRefreshWindow 热更新周期保活的临期窗口（schedule.keepalive_refresh_window，
+// 面板保存配置后调用）。<=0 视为不过滤（等价全量刷新）。
+func (s *Scheduler) SetKeepaliveRefreshWindow(d time.Duration) {
+	s.schedMu.Lock()
+	s.cfg.KeepaliveRefreshWindow = d
+	s.schedMu.Unlock()
 }
 
 // Reconfigure 热更新排程参数（面板保存配置后调用）：改时点/开关并通知运行中的循环重算。
@@ -576,7 +614,7 @@ func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
 			case taskActivity:
 				s.runActivity(ctx, spread)
 			case taskKeepalive:
-				s.runKeepalive(ctx, spread)
+				s.runKeepalive(ctx, spread, true)
 			case taskBlackcat:
 				s.runBlackcat(ctx, spread)
 			case taskGrowth:
@@ -626,7 +664,7 @@ func (s *Scheduler) runCheckin(ctx context.Context, spread bool) {
 	plan := s.spreadPlan(taskCheckin, spread, cst.Now())
 	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
-	for _, st := range s.cfg.Pool.List() {
+	for _, st := range plan.order(s.cfg.Pool.List()) {
 		if st.Disabled && !includeDisabled {
 			continue
 		}
@@ -719,7 +757,7 @@ func (s *Scheduler) runActivity(ctx context.Context, spread bool) {
 	plan := s.spreadPlan(taskActivity, spread, cst.Now())
 	first := true
 	includeDisabled := s.includeDisabledInTasks()
-	for _, st := range s.cfg.Pool.List() {
+	for _, st := range plan.order(s.cfg.Pool.List()) {
 		if st.Disabled && !includeDisabled {
 			continue
 		}
@@ -788,15 +826,25 @@ func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 // 12153 禁用走 Pool.NoteSessionDead 的**连续计数**语义：一次刷新失败不再立即杀号，
 // 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
 // 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
+// 手动入口始终全量；排程到点走 selective=true（只刷新临期窗口内的账号）。
 func (s *Scheduler) RunKeepaliveNow() {
-	s.runKeepalive(context.Background(), false)
+	s.runKeepalive(context.Background(), false, false)
 }
 
 // runKeepalive 保活遍历。spread=true（排程路径）时按账号级偏移错开，见 spread.go。
-func (s *Scheduler) runKeepalive(ctx context.Context, spread bool) {
+// selective=true（排程路径）时按临期窗口过滤：token 距过期还早的账号本轮跳过，
+// 不轮换其 refresh token。窗口 <=0 视为不过滤（退化为全量）。
+func (s *Scheduler) runKeepalive(ctx context.Context, spread, selective bool) {
+	var window time.Duration
+	if selective {
+		window = s.keepaliveRefreshWindow()
+		if window <= 0 {
+			selective = false
+		}
+	}
 	plan := s.spreadPlan(taskKeepalive, spread, cst.Now())
 	includeDisabled := s.includeDisabledInTasks()
-	for _, st := range s.cfg.Pool.List() {
+	for _, st := range plan.order(s.cfg.Pool.List()) {
 		if st.Disabled && !includeDisabled {
 			continue
 		}
@@ -804,12 +852,24 @@ func (s *Scheduler) runKeepalive(ctx context.Context, spread bool) {
 		if a == nil || a.RefreshTokenValue() == "" {
 			continue
 		}
+		// NeedsRefresh 对已过期/无 expiry 返回 true，天然兜底。
+		if selective && !a.NeedsRefresh(window) {
+			continue
+		}
 		if !plan.wait(ctx, st.UID) {
 			return // ctx 取消：剩余账号下轮再续
 		}
 		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
-			log.Printf("WARN: keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
 			var ue *upstream.Error
+			// refresh token 失效 ≠ 账号不可用：AT 还没过期时 chat 仍正常（issue #83）。
+			// 这种号既不计 session dead（连续 3 次保活就会禁用掉健康号），也不打 WARN——
+			// 面板的错误汇总按 WARN 聚合，打 WARN 会让「保活失败」一直挂在页面上。
+			if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead && upstream.SessionDeadButUsable(a) {
+				log.Printf("INFO: keepalive %s: refresh token 已失效但 access token 仍有效，本轮跳过（对话仍可用）",
+					logfmt.Label(st.UID, st.Nickname))
+				continue
+			}
+			log.Printf("WARN: keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
 			if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead && !st.Disabled {
 				if s.cfg.Pool.NoteSessionDead(st.UID) {
 					log.Printf("WARN: keepalive %s: 连续 %d 次 12153 session dead — 禁用", logfmt.Label(st.UID, st.Nickname), pool.SessionDeadThreshold())
@@ -848,6 +908,12 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 	var wg sync.WaitGroup
 	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
+	// 账号级起跑错峰（人味化，humanize.go）：并发齐射改为窗口内逐号错开，
+	// 消除「同一秒全池同动作」的时间指纹。窗口量级 = frac×interval（周期抖动
+	// 关闭时为 0 = 旧行为全并发）；偏移逐号、逐轮独立——固定映射会把「每轮第
+	// i 个号」钉在同一相对位置。手动全量刷新也走这里，延迟上界 frac×interval
+	//（默认配置下 ≤ 分钟级）；未启用抖动时行为与旧版逐字一致。
+	stagger := spreadIntervalStagger(time.Duration(s.balanceInterval.Load()), s.periodicJitterFor(false))
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled && !includeDisabled {
 			continue
@@ -857,8 +923,11 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 			continue
 		}
 		wg.Add(1)
-		go func(a *auth.Auth, uid string) {
+		go func(a *auth.Auth, uid string, wait time.Duration) {
 			defer wg.Done()
+			if wait > 0 && !sleepCtx(context.Background(), wait) {
+				return
+			}
 			remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
 			if err != nil {
 				log.Printf("WARN: balance %s: %v", logfmt.Label(uid, a.Nickname), err)
@@ -874,10 +943,64 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 				EarliestRemaining: earliestRemaining,
 				ExpiryBuckets:     poolExpiryBuckets(buckets),
 			})
-		}(a, st.UID)
+			// 余额采样：这里已拿到新鲜余额，顺手记一点（不额外打上游）。
+			// 内部按 30 分钟节流，故多数刷新周期不会落点。
+			if s.cfg.Balance != nil {
+				s.cfg.Balance.SetName(uid, st.Nickname)
+				if s.cfg.Balance.Add(uid, remain) {
+					log.Printf("balance-sample %s: credits=%d", uid, remain)
+				}
+			}
+		}(a, st.UID, spreadStaggerDelay(stagger, st.UID))
 	}
 	wg.Wait()
 	s.lastBalanceRefresh.Store(time.Now().UnixNano())
+}
+
+// SetJitter 热改周期抖动比例（千分比；<=0 关闭）。balance 与 sweep 各自独立。
+func (s *Scheduler) SetJitter(balancePermill, sweepPermill int) {
+	if balancePermill < 0 {
+		balancePermill = 0
+	}
+	if sweepPermill < 0 {
+		sweepPermill = 0
+	}
+	s.balanceJitter.Store(int64(balancePermill))
+	s.sweepJitter.Store(int64(sweepPermill))
+}
+
+// SetNightAccountCap 热改夜间参与上限；<0 视为 0（不限）。
+func (s *Scheduler) SetNightAccountCap(n int) {
+	if n < 0 {
+		n = 0
+	}
+	s.nightAccountCap.Store(int64(n))
+}
+
+// NightAccountCap 当前夜间参与上限。
+func (s *Scheduler) NightAccountCap() int { return int(s.nightAccountCap.Load()) }
+
+// capByCredits 夜间任务候选收窄：按积分降序取前 cap 个（余额未知/相同的顺序不稳定，
+// 但候选集每天基本不变，无需额外确定性）。cap<=0 或候选不超上限时原样返回。
+func capByCredits(list []pool.Status, cap int) []pool.Status {
+	if cap <= 0 || len(list) <= cap {
+		return list
+	}
+	sorted := append([]pool.Status(nil), list...)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j].Credits > sorted[j-1].Credits; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	return sorted[:cap]
+}
+
+// periodicJitterFor 当前生效的周期抖动（千分比 → 比例）。
+func (s *Scheduler) periodicJitterFor(sweep bool) float64 {
+	if sweep {
+		return float64(s.sweepJitter.Load()) / 1000
+	}
+	return float64(s.balanceJitter.Load()) / 1000
 }
 
 // StartBalanceRefresh 后台周期性余额刷新（独立 ticker goroutine，ctx 取消即停）。
@@ -897,6 +1020,12 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 		var logged time.Duration
 		for {
 			cur := time.Duration(s.balanceInterval.Load())
+			// 人味化抖动：间隔在 ±frac×interval 内偏移（每轮重取，进程种子稳定），
+			// 不再精确固定间隔打卡。基准间隔不变（热改/暂停语义不受影响）。
+			delay := cur + periodicJitter(cur, s.periodicJitterFor(false), "bal")
+			if delay < 0 {
+				delay = 0
+			}
 			if cur != logged {
 				log.Printf("scheduler: 余额后台刷新每 %s（暂停中显示 0s）", cur)
 				logged = cur
@@ -910,7 +1039,7 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()

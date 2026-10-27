@@ -10,13 +10,13 @@ import "testing"
 // 对不上任何一档真实价格（issue：面板显示 0.55/张，用户选 high 后均值漂移）。
 func TestRecordImageChargeBuckets(t *testing.T) {
 	c := New()
-	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0.55, 3997)
-	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0.55, 3997)
-	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "high", 4.84, 35333)
+	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0.55, 3997, 0)
+	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0.55, 3997, 0)
+	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "high", 4.84, 35333, 0)
 	// 另一个模型 / 另一个域不串档。
-	c.RecordImageCharge("cn", "hunyuan-image-alpha", "512x512", "", 5.71, 0)
+	c.RecordImageCharge("cn", "hunyuan-image-alpha", "512x512", "", 5.71, 0, 0)
 	// credit<=0（上游省略 usage）不入账，也不改已有样本。
-	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0, 0)
+	c.RecordImageCharge("global", "gpt-image-2.5-sunburst", "1024x1024", "low", 0, 0, 0)
 
 	got := c.ImageCharges("global", "gpt-image-2.5-sunburst")
 	if len(got) != 2 {
@@ -46,8 +46,8 @@ func TestRecordImageChargeBuckets(t *testing.T) {
 // 不能因为空串互相覆盖或分裂成多个桶。
 func TestImageChargeKeyDistinguishesMissingFields(t *testing.T) {
 	c := New()
-	c.RecordImageCharge("cn", "hunyuan-image-alpha", "", "", 5.71, 0)
-	c.RecordImageCharge("cn", "hunyuan-image-alpha", "", "", 5.71, 0)
+	c.RecordImageCharge("cn", "hunyuan-image-alpha", "", "", 5.71, 0, 0)
+	c.RecordImageCharge("cn", "hunyuan-image-alpha", "", "", 5.71, 0, 0)
 	got := c.ImageCharges("cn", "hunyuan-image-alpha")
 	if len(got) != 1 || got[0].Samples != 2 {
 		t.Fatalf("空尺寸/画质应落同一桶，得到 %+v", got)

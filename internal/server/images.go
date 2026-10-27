@@ -4,7 +4,12 @@
 // 所以模型名不走目录校验，按 realm 前缀路由到对应账号池：
 //
 //	cn:hunyuan-image-alpha         国内版（实测 200 + 签名 COS URL）
-//	global:gpt-image-2.5-sunburst  国际版（混元在国际版无路由，回 14401）
+//	cn:hunyuan-image-alpha-edit    国内版图生图
+//	global:hy-image-3.5            国际版（2026-10-22 实测 200 + credit 0.27/张）
+//	global:gpt-image-2.5-sunburst  已下架（400 code=14401 route config not found）
+//
+// 裸名 → realm 的映射表在 upstream（imageRouteRealm），已下架模型表为 imageDeadModels；
+// 两者都只写实测过的组合，未知模型照旧放行（不猜）。
 //
 // 请求体只把 model 换成裸名（前缀是网关路由协议，上游只认裸名），其余原样透传；
 // multipart 请求（OpenAI SDK 的 images.edit 走这条）就地转成上游要的 JSON（图片转 data URL）。
@@ -24,13 +29,43 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/logfmt"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/usage"
 )
 
 // defaultImageModel 请求未带 model 时的缺省图像模型（国内版；realm 由前缀决定）。
 const defaultImageModel = "cn:hunyuan-image-alpha"
+
+// firstAllowedGenerationImage 白名单兜底（issue #68 设计决策 4）：从最近一次目录
+// 解析留存的出图模型里，按 cn 优先、global 其次返回第一个「白名单内且未被黑名单
+// 隐藏」的 image 模型 (realm, 裸名)。白名单未启用 / 无目录 / 无命中 → false，
+// 调用方维持默认名走拒绝路径（不做隐式放行）。
+func (h *Handler) firstAllowedGenerationImage() (string, string, bool) {
+	snap := h.loadLive()
+	if !snap.AllowlistEnabled || h.cfg.Upstream == nil {
+		return "", "", false
+	}
+	realms := []string{"cn"}
+	if h.cfg.GlobalEnabled {
+		realms = append(realms, "global")
+	}
+	for _, realm := range realms {
+		for _, mi := range h.cfg.Upstream.GenerationModels(realm) {
+			if mi.GenerationKind != "image" {
+				continue
+			}
+			if h.hiddenModel(realm, mi.ID) {
+				continue
+			}
+			if _, ok := snap.AllowedModels[realm+":"+mi.ID]; !ok {
+				continue
+			}
+			return realm, mi.ID, true
+		}
+	}
+	return "", "", false
+}
 
 // imageAttempts 失败换号上限（与 chat 路径同量级：图像按次人工触发，3 次足够绕开坏号）。
 const imageAttempts = 3
@@ -55,11 +90,32 @@ func (h *Handler) images(w http.ResponseWriter, r *http.Request, edit bool) {
 		return
 	}
 	model, _ := req["model"].(string)
-	if strings.TrimSpace(model) == "" {
+	named := strings.TrimSpace(model) != "" // 客户端是否显式点名了模型
+	if !named {
 		model = defaultImageModel
 	}
 	realm, bare := resolveModel(model)
+	// models.allowed 白名单（issue #68）：与 chat 入口同款拒绝，不打上游、不占选号。
+	// 未点名模型时先做白名单内兜底（设计决策 4）：默认模型不在白名单时改选
+	// 白名单内第一个可用出图模型；白名单内无出图模型则维持默认名落入拒绝
+	//（不做隐式放行）。文案与 chat 侧同口径，避免枚举探测。
+	if !h.allowedModel(realm, bare) {
+		if !named {
+			if fr, fb, ok := h.firstAllowedGenerationImage(); ok {
+				realm, bare = fr, fb
+			} else {
+				writeOpenAIError(w, http.StatusBadRequest, "model_unavailable",
+					"model is not in the gateway allowlist, try another model")
+				return
+			}
+		} else {
+			writeOpenAIError(w, http.StatusBadRequest, "model_unavailable",
+				"model is not in the gateway allowlist, try another model")
+			return
+		}
+	}
 	// models.hidden 同一份黑名单也管出图入口：列表里已经隐藏的模型不该还能直接调。
+	// （白名单兜底选出的模型也在此受检：白名单∩黑名单交集语义，隐藏的不例外。）
 	if h.hiddenModel(realm, bare) {
 		writeOpenAIError(w, http.StatusBadRequest, "model_unavailable",
 			"model is hidden by gateway configuration, try another model")
@@ -183,13 +239,13 @@ func recordImageUsage(h *Handler, st *chatStat, realm, uid, bare, modelRate stri
 		Quality string `json:"quality"`
 		Size    string `json:"size"`
 		Usage   struct {
-			InputTokens   int64   `json:"input_tokens"`
-			OutputTokens  int64   `json:"output_tokens"`
-			TotalTokens   int64   `json:"total_tokens"`
-			Credit        float64 `json:"credit"`
-			ImageCounts   int64   `json:"output_image_counts"`
-			ImageTokens   int64   `json:"output_image_tokens"`
-			Coefficient   float64 `json:"output_image_coefficient"`
+			InputTokens  int64   `json:"input_tokens"`
+			OutputTokens int64   `json:"output_tokens"`
+			TotalTokens  int64   `json:"total_tokens"`
+			Credit       float64 `json:"credit"`
+			ImageCounts  int64   `json:"output_image_counts"`
+			ImageTokens  int64   `json:"output_image_tokens"`
+			Coefficient  float64 `json:"output_image_coefficient"`
 		} `json:"usage"`
 	}
 	_ = json.Unmarshal(data, &env) // 上游省略 usage 时零值：下面按「有没有真值」决定是否记账
@@ -210,7 +266,7 @@ func recordImageUsage(h *Handler, st *chatStat, realm, uid, bare, modelRate stri
 			if quality == "" {
 				quality, _ = req["quality"].(string)
 			}
-			h.cfg.Upstream.RecordImageCharge(realm, bare, size, quality, u.Credit, u.ImageTokens)
+			h.cfg.Upstream.RecordImageCharge(realm, bare, size, quality, u.Credit, u.ImageTokens, u.Coefficient)
 		}
 	}
 	imgs := u.ImageCounts

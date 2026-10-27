@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // 闸门只允许产生「假阳性」（多解析一次）；结果必须与无条件解析逐项相等。

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // travelPath 断言请求打到 growth 域的正确路径（BASE 走 chatBase，无 /v2 前缀）。

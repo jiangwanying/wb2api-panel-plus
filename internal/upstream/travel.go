@@ -1,5 +1,5 @@
 // travel.go growth 域「猫猫旅行」接口：状态查询 / 派出 / 领奖 / 领养 / 协议。
-// 全部走 chatBase（copilot.tencent.com，不带 /v2 前缀）+ BillingHeaders，信封同 doJSON。
+// 全部走 chatBase（缺省 www.workbuddy.cn，不带 /v2 前缀）+ BillingHeaders，信封同 doJSON。
 package upstream
 
 import (
@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // growth 域路径（实测）。

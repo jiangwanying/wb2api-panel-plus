@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/auth"
 )
 
 // TestCorruptStateFileLogsAndKeepsFile 损坏/截断的 state.json 此前被静默丢弃：池子以
