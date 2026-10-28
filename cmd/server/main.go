@@ -45,8 +45,8 @@ var appVersion = "dev"
 var appRepository = "jiangwanying/wb2api-panel-plus"
 
 // insecureKeyWarning 空 api_key = 完全不鉴权（httpauth.VerifyBearer 对空 key 恒放
-// 行），样例占位符 test_key = 人尽皆知的弱密钥；叠加非回环监听（缺省 ":7863" 绑
-// 所有网卡）等于把网关与面板 API 暴露给整个内网/公网。返回非空告警文本供启动日志
+// 行），样例占位符 test_key = 人尽皆知的弱密钥；叠加非回环监听（显式配成
+// "0.0.0.0:7863" 或 ":7863"）等于把网关与面板 API 暴露给整个内网/公网。返回非空告警文本供启动日志
 // 打印，安全状态返回空串。首启自动生成的随机 key 不会命中——这是给「照抄样例 /
 // 显式清空」的最后提醒，不阻塞启动。
 func insecureKeyWarning(listen, apiKey string) string {
@@ -544,6 +544,15 @@ func main() {
 		// 排程轮次结果汇总的推送出口（告警 webhook 同一条管道；未启用则只落面板日志）。
 		pn.SetNotifier(mon.Notify)
 		log.Printf("alerting: webhook on, every %ds", cfg.Alerting.IntervalSeconds)
+		// 上游目录改版监控也走这条管道（未启用告警时只写日志，见下方 watchdog 段）。
+		if cfg.Watchdog.Enabled {
+			go gw.WatchCatalog(ctx, time.Duration(cfg.Watchdog.IntervalSeconds)*time.Second, mon.Notify)
+			log.Printf("watchdog: 上游目录监控开，每 %ds", cfg.Watchdog.IntervalSeconds)
+		}
+	} else if cfg.Watchdog.Enabled {
+		// 没有 webhook 也要能开：变化只写日志（面板任务日志里能翻到）。
+		go gw.WatchCatalog(ctx, time.Duration(cfg.Watchdog.IntervalSeconds)*time.Second, nil)
+		log.Printf("watchdog: 上游目录监控开（未配置 alerting，仅写日志），每 %ds", cfg.Watchdog.IntervalSeconds)
 	}
 
 	// 启动即预热模型积分倍率表：倍率只在 FetchModels/FetchGlobalModelInfos 成功时

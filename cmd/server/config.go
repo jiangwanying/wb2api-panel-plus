@@ -19,7 +19,7 @@ import (
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string `json:"listen"`     // ":7863"
+	Listen    string `json:"listen"`     // "127.0.0.1:7863"（缺省只绑回环）
 	APIKey    string `json:"api_key"`    // 空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
@@ -372,6 +372,13 @@ type Config struct {
 		ClearTicks          int    `json:"clear_ticks"`
 		SendResolve         bool   `json:"send_resolve"`
 	} `json:"alerting"`
+
+	// Watchdog 上游目录改版监控：定期对 /v1/models 结果取指纹，变了经告警 webhook 通知。
+	// 默认关闭——它只在「想第一时间知道上游改了目录」时有价值，开了才有轮询成本。
+	Watchdog struct {
+		Enabled         bool `json:"enabled"`
+		IntervalSeconds int  `json:"interval_seconds"`
+	} `json:"watchdog"`
 	Budget struct {
 		DailyCreditLimit float64 `json:"daily_credit_limit"` // 0 = 不限
 		// BurstCreditLimit 5 分钟窗口内累计 credit 达此值即拒绝（0 = 关闭）。
@@ -406,7 +413,9 @@ type Config struct {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:    ":7863",
+		// 默认只绑回环：网关 + 面板 + 空/弱 api_key 同时暴露在公网是这份配置最危险的
+		// 组合。要对外先过反代（nginx/caddy），确需直连再显式改 0.0.0.0:7863。
+		Listen:    "127.0.0.1:7863",
 		APIKey:    "",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
@@ -481,6 +490,7 @@ func Default() *Config {
 	c.Alerting.RecoverHealthy = 1
 	c.Alerting.ForTicks = 2
 	c.Alerting.ClearTicks = 2
+	c.Watchdog.IntervalSeconds = 3600 // 目录变化是低频事件，一小时一次足够
 	return c
 }
 
@@ -781,6 +791,9 @@ func (c *Config) normalize() error {
 	var err error
 	if c.Panel.PackageDetailLimit <= 0 {
 		c.Panel.PackageDetailLimit = 5
+	}
+	if c.Watchdog.IntervalSeconds <= 0 {
+		c.Watchdog.IntervalSeconds = 3600
 	}
 	if c.Update.AutoTime == "" {
 		c.Update.AutoTime = "04:00"

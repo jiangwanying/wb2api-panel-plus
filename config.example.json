@@ -1,5 +1,5 @@
 {
-  "listen": ":7863",
+  "listen": "127.0.0.1:7863",
   "api_key": "test_key",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
@@ -127,5 +127,10 @@
     "webhook_url": "",
     "min_healthy_cn": 1,
     "min_healthy_global": 0
+  },
+  "watchdog": {
+    "_comment": "上游目录改版监控：定期对 /v1/models 结果取指纹，模型新增/下线或能力字段变动时经 alerting.webhook_url 通知。默认关闭——只在想第一时间知道上游改了目录时开。",
+    "enabled": false,
+    "interval_seconds": 3600
   }
 }

@@ -13,6 +13,9 @@ services:
     user: "${PUID:-10001}:${PGID:-10001}"
     environment:
       - TZ=Asia/Shanghai
+      # 程序缺省只绑 127.0.0.1（宿主机部署更安全），容器内必须显式放开，
+      # 否则下面的 ports 映射进来的连接一律被拒。
+      - WB2A_LISTEN=0.0.0.0:7863
     ports:
       - "7863:7863"
     volumes:

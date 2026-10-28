@@ -189,8 +189,8 @@ func TestModelBlockedThenClear(t *testing.T) {
 }
 
 // TestModelForbiddenReasonClearedAndTagged 11158 条目必须与 11102 同等对待：
-//   - 写入后可被 BlockModelClear 清除（否则该模型重新获得权限后永不恢复，直到 6h~24h
-//     退避到期；上游换了权限档位这种情况很常见）；
+//   - 写入后可被 BlockModelClear 清除（否则该模型重新获得权限后永不恢复，直到 2m~10m
+//     退避到期；上游换了权限档位这种情况很常见——虽有退避也会自愈，但清掉更快）；
 //   - 台账 kind 记 model_unavailable（不是 rate_limit：这不是限流，不会自己退）；
 //   - 6004 条目不受影响（成功不该抹掉上游给的重置墙钟）。
 func TestModelForbiddenReasonClearedAndTagged(t *testing.T) {
@@ -221,5 +221,26 @@ func TestModelForbiddenReasonClearedAndTagged(t *testing.T) {
 		if row.Model != "glm-5.3" {
 			t.Fatalf("只应保留 6004 条目，实际还有 %+v", row)
 		}
+	}
+}
+
+// TestModelBlockTTLShortEnoughToSelfHeal 11102 负缓存必须短到能自愈。
+//
+// 原参数 6h 起、封顶 24h，把一次偶发误判（11102 不总是「这号真没这模型」）放大成
+// (账号,模型) 锁死整天，多号轮一圈就是整池该模型 503（ithtelab/workbuddy-manager#312
+// 的 0033 / issue #308：实测同一账号两分钟就恢复）。退避本身保留，只是基数与封顶缩短。
+func TestModelBlockTTLShortEnoughToSelfHeal(t *testing.T) {
+	if modelBlockBaseTTL > 5*time.Minute {
+		t.Fatalf("modelBlockBaseTTL=%v 过长：一次误判会把 (账号,模型) 锁太久", modelBlockBaseTTL)
+	}
+	if modelBlockMaxTTL > 15*time.Minute {
+		t.Fatalf("modelBlockMaxTTL=%v 过长：反复命中也该在十几分钟内自愈", modelBlockMaxTTL)
+	}
+	if modelBlockMaxTTL < modelBlockBaseTTL {
+		t.Fatalf("封顶 %v 小于基数 %v", modelBlockMaxTTL, modelBlockBaseTTL)
+	}
+	// 退避仍需存在：base × 2^shift 必须真的超过封顶，否则 Hits 机制形同虚设。
+	if modelBlockBaseTTL<<modelBlockShift < modelBlockMaxTTL {
+		t.Fatalf("退避到不了封顶：base<<%d = %v < max %v", modelBlockShift, modelBlockBaseTTL<<modelBlockShift, modelBlockMaxTTL)
 	}
 }

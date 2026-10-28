@@ -1050,13 +1050,22 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 降级裁决：append 在降级期退化为 replace（Rewrite(Degraded)）——append 带
 	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救（issue #129 设计 §4）。
 	degradedApplied := false
+	// movedApplied 11-128 的「搬家」抢救只用一次（system 原文搬进首条 user），
+	// 与 degradedApplied（中性提示词替换）按顺序各用一次，避免同请求反复重试。
+	movedApplied := false
 	if h.cfg.PromptMode == "custom" && h.cfg.PromptText != "" {
 		body = prompt.Rewrite(body, h.cfg.PromptText)
 	} else if h.cfg.PromptMode == "append" && h.cfg.PromptText != "" && !h.degrade.Active() {
 		body = prompt.Append(body, h.cfg.PromptText)
 	} else if (h.cfg.PromptMode == "passthrough" || h.cfg.PromptMode == "append") && h.degrade.Active() {
-		body = prompt.Rewrite(body, prompt.Degraded)
-		degradedApplied = true
+		// 降级期：优先「搬家」（原文保住客户端人格，且不再撞 11-128），搬不动才整体替换。
+		if moved, ok := prompt.MoveSystemToUser(body, prompt.Degraded); ok {
+			body = moved
+			movedApplied = true
+		} else {
+			body = prompt.Rewrite(body, prompt.Degraded)
+			degradedApplied = true
+		}
 	}
 	// 渠道校验兜底：上游要求 messages[0] 必须是 system（首条 user 直接 400
 	// 11-128「first message is not system prompt」，首条 developer 报
@@ -1285,11 +1294,25 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			// 内容拦截误报（passthrough/append 模式首遇）：判定为 system 指纹误报，
-			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试（append
-			// 降级重试同样退化为 replace——原文在场只会确定性再撞 400）。
+			// 内容拦截误报（passthrough/append 模式）：先试「搬家」再试「替换」。
+			// 两级都只在本来就会失败的请求上多花一次上游调用，正常流量零影响。
+			//   ① MoveSystemToUser：system 原文搬进首条 user，一个字符都不丢，先保住人格；
+			//   ② Rewrite(Degraded)：中性提示词整体替换 system，保证不再命中。
 			// 第二次仍被拦（用户内容本身触发审核）→ 回内容防火墙错误（见下分支）。
 			// 内容问题非账号问题：applyErrorPolicy 不罚账号（见 ErrContentBlocked 分支）。
+			if kind == upstream.ErrContentBlocked && (h.cfg.PromptMode == "passthrough" || h.cfg.PromptMode == "append") && !movedApplied {
+				if moved, ok := prompt.MoveSystemToUser(body, prompt.Degraded); ok {
+					body = moved
+					movedApplied = true
+					// 置降级态：这条客户端的 system 每次都会被拦，逐请求重试等于双倍上游调用。
+					// 之后的新请求直接按搬家形态出站，人格不丢也不再撞墙。
+					h.degrade.Trigger()
+					delete(tried, acct.UID) // 单账号池也能拿到重试机会（重试占一次名额）
+					releaseHeld()
+					log.Printf("content-blocked (system fingerprint) -> moved system text into first user message, retry")
+					continue
+				}
+			}
 			if kind == upstream.ErrContentBlocked && (h.cfg.PromptMode == "passthrough" || h.cfg.PromptMode == "append") && !degradedApplied {
 				h.degrade.Trigger()
 				body = prompt.Rewrite(body, prompt.Degraded)

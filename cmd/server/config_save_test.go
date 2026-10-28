@@ -54,7 +54,7 @@ func TestSaveConfigReportsActualAndPendingRestarts(t *testing.T) {
 	if fields := save(`{"api_key":"second"}`); !reflect.DeepEqual(fields, []string{"listen"}) {
 		t.Fatalf("pending restart disappeared: %v", fields)
 	}
-	if fields := save(`{"listen":":7863"}`); len(fields) != 0 {
+	if fields := save(`{"listen":"127.0.0.1:7863"}`); len(fields) != 0 {
 		t.Fatalf("reverted pending fields=%v", fields)
 	}
 }

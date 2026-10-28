@@ -1866,12 +1866,20 @@ func TestContentBlockedTriggersDegradedRetry(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("want 2 upstream calls (first 400 + retry), got %d", len(bodies))
 	}
-	// 第二次出站 body 的 messages 头部 system 内容应为 Degraded 文本。
+	// 第二次出站：system 换成 Degraded 中性句，**原文搬进首条 user**（不再丢弃人格）。
 	if !strings.Contains(string(bodies[1]), prompt.Degraded) {
 		t.Errorf("second body should contain Degraded prompt: %s", bodies[1])
 	}
-	if strings.Contains(string(bodies[1]), "原始指纹") {
-		t.Errorf("second body should not contain original system: %s", bodies[1])
+	var second map[string]any
+	if err := json.Unmarshal(bodies[1], &second); err != nil {
+		t.Fatalf("second body json: %v", err)
+	}
+	msgs := second["messages"].([]any)
+	if got := msgs[0].(map[string]any)["content"]; got != prompt.Degraded {
+		t.Errorf("首条 system 应为 Degraded: %v", got)
+	}
+	if got, _ := msgs[1].(map[string]any)["content"].(string); !strings.Contains(got, "原始指纹") {
+		t.Errorf("system 原文应搬进首条 user 而不是丢掉: %v", msgs[1])
 	}
 }
 
