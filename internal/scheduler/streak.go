@@ -26,10 +26,9 @@ func (s *Scheduler) RunStreakBonusNow() {
 			continue
 		}
 		if a.IsGlobal() {
-			// D4 门控只覆盖 CN 成长体系（连登/补签/兑换/抽奖走 CN web base）。礼包与补偿是
+			// D4 门控只覆盖 CN 成长体系（连登/补签/兑换/抽奖走 CN web base）。礼包是
 			// billing 域、按 realm 走 base，国际号实测 200——一并跳过就会静默漏领国际区活动。
 			s.claimGiftQuiet(a)
-			s.claimCompensationQuiet(a)
 			continue
 		}
 		if !a.SupportsPersonalGrowth() {
@@ -39,14 +38,13 @@ func (s *Scheduler) RunStreakBonusNow() {
 	}
 }
 
-// streakBonusAccount 单账号：补签保连登 → 礼包/补偿 → 兑换所有已解锁档位 → 抽完所有 chances。
+// streakBonusAccount 单账号：补签保连登 → 礼包 → 兑换所有已解锁档位 → 抽完所有 chances。
 func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	// 0. 补签保连登：本月漏签且有补签卡则从最近一天往回补（连续天数一断就要重攒 7 天）。
 	s.makeupMissed(a)
-	// 0.5 礼包 + 补偿：两者都走「先查状态 → 待领才领」（见 compensation.go）。
+	// 0.5 礼包：走「先查状态 → 待领才领」（见 benefit.go）。
 	// 盲领会把「无活动/已领过」打成假的「+0c」成功行，真失败反倒无痕。
 	s.claimGiftQuiet(a)
-	s.claimCompensationQuiet(a)
 
 	full, err := s.cfg.Upstream.GrowthStreakFull(a)
 	if err != nil {
@@ -114,6 +112,13 @@ func (s *Scheduler) makeupMissed(a *auth.Auth) {
 		return
 	}
 	for i, n := 0, min(full.MakeupCards.Balance, len(broken)); i < n; i++ {
+		// 每轮上限（schedule.makeup_cards_per_round，0 = 不限）：补签是改账号历史的写操作，
+		// 保守部署可以一轮只补一张，剩下的交给次日签到再补。
+		if cap := s.MakeupCardsPerRound(); cap > 0 && i >= cap {
+			log.Printf("streak-bonus %s: 本轮已用 %d 张补签卡（schedule.makeup_cards_per_round 上限），剩余漏签下一轮继续",
+				logfmt.Label(a.UID, a.Nickname), i)
+			return
+		}
 		d := broken[len(broken)-1-i]
 		if err := s.cfg.Upstream.UseMakeupCard(a, d); err != nil {
 			log.Printf("WARN: streak-bonus %s: 补签 %s 失败: %v", logfmt.Label(a.UID, a.Nickname), d, err)

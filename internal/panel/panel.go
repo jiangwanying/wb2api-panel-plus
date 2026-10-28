@@ -263,9 +263,6 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/tasks/jobs", p.withAuth(p.taskJobsHandler))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks/job", p.withAuth(p.taskJobStatus))
 	p.mux.HandleFunc("POST /panel/api/checkin_all", p.withAuth(p.checkinAll))
-	p.mux.HandleFunc("GET /panel/api/compensation", p.withAuth(p.compensation))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/compensation", p.withAuth(p.accountCompensation))
-	p.mux.HandleFunc("POST /panel/api/compensation_all", p.withAuth(p.compensationAll))
 	p.mux.HandleFunc("POST /panel/api/travel_all", p.withAuth(p.travelAll))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/travel", p.withAuth(p.accountTravel))
 	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))
@@ -279,6 +276,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
+	p.mux.HandleFunc("POST /panel/api/model_hidden", p.withAuth(p.setModelHidden))
+	p.mux.HandleFunc("POST /panel/api/model_effort", p.withAuth(p.setModelEffort))
 	p.mux.HandleFunc("GET /panel/api/update", p.withAuth(p.updateStatus))
 	p.mux.HandleFunc("POST /panel/api/update/check", p.withAuth(p.checkUpdate))
 	p.mux.HandleFunc("POST /panel/api/update/install", p.withAuth(p.installUpdate))
@@ -609,7 +608,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 	} else if entry := p.loadModelsCache(); entry != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":            true,
-			"models":        entry.models,
+			"models":        p.withLiveFlags(entry.models),
 			"global_source": entry.globalSource,
 			"cached":        true,
 		})
@@ -766,7 +765,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
-		"models": out,
+		"models": p.withLiveFlags(out),
 		// global_source global 目录来源（v3-desktop / v3-union / enterprise）。
 		// 前端据此提示「拿到的是回落/降级目录」——issue #216 里用户只看到「少了 11 个模型」，
 		// 完全不知道已经降级到企业端点（那份目录只有 18 条、hy4-preview 的倍率还是旧值）。
@@ -790,6 +789,54 @@ func (p *Panel) storeModelsCache(entry *modelsCacheEntry) {
 	defer p.modelsMu.Unlock()
 	p.modelsCache = entry
 	p.modelsCacheAt = time.Now()
+}
+
+// withLiveFlags 给模型条目补运行期标记（每次响应按 live 快照现算，不写进 60s
+// 缓存：面板里切换「下游可见」或改思考档位策略后，同一缓存周期内也要立刻看到变化）。
+//
+//   - hidden：是否对下游暴露（models.hidden）；
+//   - gateway_policy_enabled：思考档位策略是否开启（关闭时行内「网关档位」下拉置灰）；
+//   - gateway_effort：按当前策略算出的**实际会注入的档位**——先按
+//     model_defaults → 全局 default_effort 求目标档，再由模型真实支持的档位解析
+//     （与出站 applyEffortPolicy 同一套 ResolveGatewayEffort，列表与注入不再漂移）。
+//
+// 返回浅拷贝切片，缓存条目本身不被改写——并发请求共享同一份缓存。
+func (p *Panel) withLiveFlags(entries []map[string]any) []map[string]any {
+	var hidden map[string]struct{}
+	policy := upstream.EffortPolicy{}
+	if p.cfg.Live != nil {
+		s := p.cfg.Live.Load()
+		hidden = s.HiddenModels
+		policy = upstream.EffortPolicy{
+			Enabled:        s.ThinkingEnabled,
+			DefaultEffort:  s.ThinkingDefaultEffort,
+			ClientPriority: s.ThinkingClientPriority,
+			OverrideScope:  s.ThinkingOverrideScope,
+			ModelDefaults:  s.ThinkingModelDefaults,
+		}.Normalized()
+	}
+	out := make([]map[string]any, len(entries))
+	for i, e := range entries {
+		cp := make(map[string]any, len(e)+3)
+		for k, v := range e {
+			cp[k] = v
+		}
+		if id, ok := e["id"].(string); ok {
+			_, hide := hidden[id]
+			cp["hidden"] = hide
+			cp["gateway_policy_enabled"] = policy.Enabled
+			realm, bare, hasRealm := strings.Cut(id, ":")
+			if !hasRealm {
+				realm, bare = "", id
+			}
+			supported, _ := e["supported_efforts"].([]string)
+			if eff := upstream.ResolveGatewayEffort(policy.DefaultEffortFor(realm, bare), supported); eff != "" {
+				cp["gateway_effort"] = eff
+			}
+		}
+		out[i] = cp
+	}
+	return out
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），

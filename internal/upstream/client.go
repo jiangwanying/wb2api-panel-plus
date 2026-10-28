@@ -832,6 +832,11 @@ type Client struct {
 	// 与上游既有行为一致）或 "identity"（仅 system/developer；features.sanitize_brand_scope）。
 	SanitizeBrandScope atomic.Value // string
 
+	// effortPolicy 网关思考档位策略（config thinking 节，见 effort_policy.go）：
+	// 面板保存配置热更新，chat 热路径用 atomic.Pointer 读取——存入的是规范化后的
+	// 不可变副本，读侧永不加锁，也无数据竞争。
+	effortPolicy atomic.Pointer[EffortPolicy]
+
 	// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
 	// 空 = 默认官方形态：chat/refresh/FetchModels 走
 	// `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<cliVer>`；billing 走 `WorkBuddy/<ver>`
@@ -1027,11 +1032,15 @@ func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) ([]
 		// deepseek-v4.1-flash ['high']）。当前探测桶为空时也按静态表降级，不全程透传
 		//（issue #84：往 WorkBuddy 上游发 low/max 非法，须降级到 high）。
 		efforts, defs = globalEffortMap(efforts, defs)
+	} else {
+		// CN 域同口径：与 /v1/models 的 EffortListing 声明同源，保证「声明什么档位
+		// 就按什么档位降级/补档」（此前 CN 只有远端桶，静态表只在列表侧生效）。
+		efforts, defs = cnEffortMap(efforts, defs)
 	}
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。与 body 归一化共用
 	// prepareBodyOpt 的同一次 map 解析，不再二次 Unmarshal/Marshal。
-	return prepareBodyOpt(body, c.SanitizeFingerprints.Load(), c.brandScopeGlobal(), efforts, defs, maxOut, uid, conversationID, true)
+	return prepareBodyOpt(body, c.SanitizeFingerprints.Load(), c.brandScopeGlobal(), efforts, defs, maxOut, realm, c.EffortPolicy(), uid, conversationID, true)
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。
@@ -1071,6 +1080,29 @@ func realmKey(realm string) string {
 		return "cn"
 	}
 	return realm
+}
+
+// SetEffortPolicy 热更新网关思考档位策略；nil = 关闭策略（行为退回旧管线）。
+// 存入规范化副本：chat 热路径只读不加工，避免每请求重复字符串归一。
+func (c *Client) SetEffortPolicy(p *EffortPolicy) {
+	if c == nil {
+		return
+	}
+	if p == nil {
+		c.effortPolicy.Store(nil)
+		return
+	}
+	out := p.Normalized()
+	c.effortPolicy.Store(&out)
+}
+
+// EffortPolicy 返回当前策略快照（可能为 nil）；返回指针指向不可变副本，调用方
+// 不得修改。chat 热路径每请求读一次。
+func (c *Client) EffortPolicy() *EffortPolicy {
+	if c == nil {
+		return nil
+	}
+	return c.effortPolicy.Load()
 }
 
 func (c *Client) billingBase(a *auth.Auth) string {

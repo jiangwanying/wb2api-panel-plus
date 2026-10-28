@@ -205,3 +205,42 @@ func TestMakeupMissedRepeatedRunStopsAfterCardsUsed(t *testing.T) {
 		t.Errorf("两轮补签提交=%v want [2026-10-07]（第二轮无卡不发写）", got)
 	}
 }
+
+// TestMakeupCardsPerRoundCapsWrites 每轮上限（schedule.makeup_cards_per_round）：
+// 设 1 时一轮只补最近一天，剩下的漏签留给下一轮；0 = 不限（旧行为补到卡用光）。
+//
+// 为什么要有这个闸：补签是**会改账号历史**的写操作。对照实现
+// （workbuddy-scheduled-tasks）的策略是「每轮最多 1 张，无卡/无断点/数据异常一律跳过」，
+// 宁可分几天补齐也不一次把当月漏签全刷过去。
+func TestMakeupCardsPerRoundCapsWrites(t *testing.T) {
+	stub := &makeupStub{cells: makeupCells(), balance: 3}
+	s, a := makeupScheduler(t, stub)
+
+	s.SetMakeupCardsPerRound(1)
+	s.makeupMissed(a)
+	got := stub.usedDates()
+	if len(got) != 1 || got[0] != "2026-10-07" {
+		t.Fatalf("上限 1 时补签提交=%v want [2026-10-07]", got)
+	}
+
+	// 下一轮（卡还在、上游已把 10-07 标记为有分）继续补下一个最近的漏签：
+	// 上限是「每轮」而不是「一次性」。
+	for i := range stub.cells {
+		if stub.cells[i].date == "2026-10-07" {
+			stub.cells[i].score = 2
+		}
+	}
+	s.makeupMissed(a)
+	if got = stub.usedDates(); len(got) != 2 || got[1] != "2026-10-06" {
+		t.Errorf("第二轮补签提交=%v want 追加 2026-10-06", got)
+	}
+
+	// 0 = 不限：按卡数补到用光。
+	stub2 := &makeupStub{cells: makeupCells(), balance: 3}
+	s2, a2 := makeupScheduler(t, stub2)
+	s2.SetMakeupCardsPerRound(0)
+	s2.makeupMissed(a2)
+	if got := stub2.usedDates(); len(got) != 3 {
+		t.Errorf("上限 0 时补签提交=%v want 3 条（卡数封顶，旧行为）", got)
+	}
+}

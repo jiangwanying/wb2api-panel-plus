@@ -278,7 +278,7 @@ func TestPrepareBodyCacheKeyEquivalence(t *testing.T) {
 	for _, in := range bodies {
 		t.Run(in, func(t *testing.T) {
 			oldBody := InjectPromptCacheKey(PrepareBodyOpt([]byte(in), false), uid, conv)
-			newBody, _, _ := prepareBodyOpt([]byte(in), false, true, nil, nil, nil, uid, conv, true)
+			newBody, _, _ := prepareBodyOpt([]byte(in), false, true, nil, nil, nil, "", nil, uid, conv, true)
 			if !bytes.Equal(oldBody, newBody) {
 				t.Fatalf("body mismatch\nold=%s\nnew=%s", oldBody, newBody)
 			}

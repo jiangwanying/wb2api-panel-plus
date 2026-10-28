@@ -1097,3 +1097,87 @@ func TestPeriodicJitterPermillConfig(t *testing.T) {
 		t.Fatalf("env override: %+v", c2.Schedule)
 	}
 }
+
+func TestThinkingDefaults(t *testing.T) {
+	c := Default()
+	if !c.Thinking.Enabled {
+		t.Error("thinking.enabled default should be true")
+	}
+	if c.Thinking.DefaultEffort != "max" {
+		t.Errorf("thinking.default_effort=%q want max", c.Thinking.DefaultEffort)
+	}
+	if !c.Thinking.ClientPriority {
+		t.Error("thinking.client_priority default should be true")
+	}
+	if c.Thinking.OverrideScope != "level" {
+		t.Errorf("thinking.override_scope=%q want level", c.Thinking.OverrideScope)
+	}
+}
+
+func TestThinkingRejectsInvalid(t *testing.T) {
+	for _, raw := range []string{
+		`{"thinking":{"default_effort":"turbo"}}`,
+		`{"thinking":{"default_effort":"off"}}`,
+		`{"thinking":{"override_scope":"everything"}}`,
+		`{"thinking":{"model_defaults":{"glm-5.2":"ultra"}}}`,
+	} {
+		if _, err := ParseConfig([]byte(raw)); err == nil {
+			t.Fatalf("%s should be rejected", raw)
+		}
+	}
+}
+
+func TestThinkingNormalize(t *testing.T) {
+	c, err := ParseConfig([]byte(`{"thinking":{"default_effort":" HIGH ","override_scope":"ALL",` +
+		`"model_defaults":{" glm-5.2 ":"Max","legacy":"inherit","":"high","blank":" ","glm-5.3":"Off"}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Thinking.DefaultEffort != "high" {
+		t.Errorf("default_effort=%q want high", c.Thinking.DefaultEffort)
+	}
+	if c.Thinking.OverrideScope != "all" {
+		t.Errorf("override_scope=%q want all", c.Thinking.OverrideScope)
+	}
+	if got := c.Thinking.ModelDefaults; len(got) != 2 || got["glm-5.2"] != "max" || got["glm-5.3"] != "off" {
+		t.Fatalf("model_defaults=%v（inherit/空键/空值应被剔除，off 是合法的按模型关闭）", got)
+	}
+}
+
+func TestThinkingEnvOverride(t *testing.T) {
+	t.Setenv("WB2A_THINKING_ENABLED", "false")
+	t.Setenv("WB2A_THINKING_DEFAULT_EFFORT", "xhigh")
+	t.Setenv("WB2A_THINKING_CLIENT_PRIORITY", "false")
+	t.Setenv("WB2A_THINKING_OVERRIDE_SCOPE", "all")
+	c := Default()
+	applyEnv(c)
+	if err := c.normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if c.Thinking.Enabled || c.Thinking.ClientPriority {
+		t.Fatalf("bool env override failed: %+v", c.Thinking)
+	}
+	if c.Thinking.DefaultEffort != "xhigh" || c.Thinking.OverrideScope != "all" {
+		t.Fatalf("string env override failed: %+v", c.Thinking)
+	}
+	if fields := c.EnvironmentManagedFields(); len(fields) == 0 {
+		t.Error("thinking env vars should be reported as managed")
+	}
+}
+
+func TestConfigExampleParses(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.json"))
+	if err != nil {
+		t.Fatalf("read example: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse example: %v", err)
+	}
+	if err := cfg.normalizeThinking(); err != nil {
+		t.Fatalf("normalize example thinking: %v", err)
+	}
+	if !cfg.Thinking.Enabled || !cfg.Thinking.ClientPriority || cfg.Thinking.OverrideScope != "level" || cfg.Thinking.DefaultEffort != "max" {
+		t.Fatalf("unexpected example thinking defaults: %+v", cfg.Thinking)
+	}
+}

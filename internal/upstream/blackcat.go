@@ -1,4 +1,4 @@
-// blackcat.go 夜猫子任务（black_cat）+ 新手礼包/补偿 API。
+// blackcat.go 夜猫子任务（black_cat）+ 新手礼包领取 API。
 //
 // 判据（WorkBuddy-Daily 项目实测口径 + 本网关验证）：black_cat 要求在
 // **23:00–08:00（CST）窗口内**完成 3 次 glm-5.2 对话并上报 chat 事件链；
@@ -74,19 +74,6 @@ func (c *Client) RunNightChats(a *auth.Auth, need int) (int64, error) {
 // ClaimGift 领取新手礼包（每号一次，已领返回业务错误）。
 func (c *Client) ClaimGift(a *auth.Auth) (int64, error) {
 	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-gift", map[string]any{})
-	if err != nil {
-		return 0, err
-	}
-	var resp struct {
-		Credit int64 `json:"credit"`
-	}
-	_ = json.Unmarshal(data, &resp)
-	return resp.Credit, nil
-}
-
-// ClaimCompensation 领取活动补偿（有则领，无则业务错误）。
-func (c *Client) ClaimCompensation(a *auth.Auth) (int64, error) {
-	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-compensation", map[string]any{})
 	if err != nil {
 		return 0, err
 	}

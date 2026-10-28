@@ -128,16 +128,26 @@ func containsEffort(efforts []string, want string) bool {
 // 语义对齐参考仓库 effortsFor（remoteMeta → productFallback → 静态表），只取前两级：
 // 远端桶（探测已解析）→ 本产品静态表（本文件），缺档位即无（不再到通用静态表）。
 func globalEffortMap(remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
-	efforts := make(map[string][]string, len(globalEffortFallback)+len(remoteEfforts))
-	defs := make(map[string]string, len(globalEffortFallback)+len(remoteDefaults))
-	// 静态兜底为基。
-	for id, cap := range globalEffortFallback {
+	return effortFallbackMap(globalEffortFallback, remoteEfforts, remoteDefaults)
+}
+
+// cnEffortMap CN 域降级/补档用的 effort 能力表：与 globalEffortMap 同口径
+// （静态兜底为基，远端桶覆盖）。prepareBody 对 cn 请求调此函数，使请求侧解析
+// 与 /v1/models 的 EffortListing 声明同源——声明什么档位就按什么档位落地。
+func cnEffortMap(remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
+	return effortFallbackMap(cnEffortFallback, remoteEfforts, remoteDefaults)
+}
+
+// effortFallbackMap 通用合并：静态兜底表为基，远端桶/默认档覆盖（仅非空项）。
+func effortFallbackMap(table map[string]effortCap, remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
+	efforts := make(map[string][]string, len(table)+len(remoteEfforts))
+	defs := make(map[string]string, len(table)+len(remoteDefaults))
+	for id, cap := range table {
 		efforts[id] = append([]string(nil), cap.efforts...)
 		if cap.defaultEffort != "" {
 			defs[id] = cap.defaultEffort
 		}
 	}
-	// 远端权威覆盖（仅当远端确实下发了该模型档位）。
 	for id, v := range remoteEfforts {
 		if len(v) > 0 {
 			efforts[id] = v

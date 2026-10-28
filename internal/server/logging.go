@@ -632,7 +632,8 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 //
 // effort 为生效档位、effortReq 为客户端原始档位（见 chatStat 字段注释）：
 // 两者相同只报 effort=；不同报 effort=max->high（客户端要什么、实际发出去什么
-// 一眼可见）；客户端未携带则两个都不报。
+// 一眼可见）；客户端关思考（off/none/disabled）时生效值被清空，报客户端原值
+// effort=off；连档位都没带时报 effort=-。
 func logChatRowFull(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int,
 	think int, cacheHit, cacheMiss int, hasCache bool,
 	requestID, outcome string, attempts int, credit float64, hasCredit bool,
@@ -676,16 +677,20 @@ func logChatRowFull(ttfb, total time.Duration, model, mode, uid, nick string, st
 	if do > 0 || prep > 0 {
 		split = fmt.Sprintf(" prep=%dms do=%dms", prep.Milliseconds(), do.Milliseconds())
 	}
-	// 思考档位（见 upstream.normalizeReasoningEffort）：只在客户端携带过该字段时输出，
-	// 让"我要 medium 实际发出去的却是 low"这类静默改写当场可见。
-	// 被降级时显示 requested->effective（issue #43：只报生效值会让读者误以为
-	// 客户端根本没发 max，实际是模型档位表里没有这一档）。
-	if effort != "" {
-		if effortReq != "" && !strings.EqualFold(effortReq, effort) {
-			split += " effort=" + effortReq + "->" + effort
-		} else {
-			split += " effort=" + effort
-		}
+	// 思考档位（见 upstream.normalizeReasoningEffort）：每一行都给出，便于对照
+	// 「客户端要什么 / 网关实际发什么 / 根本没档位」三类情况：
+	//   - 降级：effort=max->high（issue #43：只报生效值会被读成客户端没发 max）
+	//   - 客户端关思考（off/none/disabled）：生效档位会被清空，显示客户端原值 effort=off
+	//   - 完全没档位：effort=-（网关关闭策略或模型不支持档位时就是这一种）
+	switch {
+	case effort != "" && effortReq != "" && !strings.EqualFold(effortReq, effort):
+		split += " effort=" + effortReq + "->" + effort
+	case effort != "":
+		split += " effort=" + effort
+	case effortReq != "":
+		split += " effort=" + effortReq
+	default:
+		split += " effort=-"
 	}
 	extra := ""
 	if requestID != "" {

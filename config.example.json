@@ -49,6 +49,7 @@
     "include_disabled_in_tasks": false,
     "balance_refresh_jitter_permill": 0,
     "task_sweep_jitter_permill": 0,
+    "makeup_cards_per_round": 0,
     "night_account_cap": 0
   },
   "global": {
@@ -75,12 +76,21 @@
   },
   "features": {
     "sanitize_blacklist_fingerprints": true,
-    "sanitize_brand_scope": "all"
+    "sanitize_brand_scope": "all",
+    "embeddings_enabled": false
   },
   "models": {
     "_comment": "hidden: 不对外暴露的模型黑名单。裸名=两域都藏；\"cn:xxx\"/\"global:xxx\"=只藏该域。/v1/models 列表过滤 + chat 点名拒绝，面板保存后热生效。allowed: 模型白名单（issue #68），条目语法同 hidden；空数组 = 不启用（默认放行全部）；非空时仅白名单内模型可列出与调用，与 hidden 共存取交集。",
     "hidden": [],
     "allowed": []
+  },
+  "thinking": {
+    "_comment": "网关思考档位策略。enabled=false 完全不碰档位；client_priority=true 客户端优先：客户端传了档位就照单全收（含关闭思考），只在缺档时补 default_effort；false 网关优先，按 override_scope 改写客户端档位（level=只改档位、尊重客户端关闭思考；all=连关闭也改写为开启）。default_effort=max 取模型支持的最高档，也可写 high/xhigh/medium/low/minimal（模型不支持时落到不高于它的最高支持档）。model_defaults 按模型覆盖目标档：\"cn:xxx\"/\"global:xxx\" 精确到域，裸名两域共用；\"inherit\" 表示不覆盖。面板「模型与档位」页每行的「网关档位」下拉直接写本表（域精确键），配置页仅保留总开关与优先级三选一；保存后热生效。",
+    "enabled": true,
+    "default_effort": "max",
+    "client_priority": true,
+    "override_scope": "level",
+    "model_defaults": {}
   },
   "prompt": {
     "mode": "passthrough",

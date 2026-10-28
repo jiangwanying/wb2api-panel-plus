@@ -257,6 +257,20 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
 .acc.md { min-width: 700px; }
 .acc.md th, .acc.md td { padding: 10px 9px; }
+/* 下游可见开关列：窄列 + 弱化说明；被隐藏的行整体降透明度（仍可点回） */
+.acc.md td.vis { width: 1px; white-space: nowrap; }
+.acc.md td.vis label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); cursor: pointer; }
+.acc.md tbody tr.md-off td { opacity: .52; }
+.acc.md tbody tr.md-off td.vis { opacity: 1; }
+/* 行内「网关档位」下拉：贴着表格，按行宽自适应，禁用态（策略关闭）灰显 */
+.acc.md td.gw select { width: 100%; min-width: 96px; padding: 3px 6px; font-size: 12.5px; }
+.acc.md td.gw select:disabled { color: var(--ink-3); background: transparent; }
+/* 思考档位策略：三选一单选组（客户端优先 / 网关优先·只档位 / 网关优先·档位+开关） */
+.radios { display: flex; flex-direction: column; gap: 2px; }
+.radios label { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; font-size: 13px; line-height: 1.5; cursor: pointer; }
+/* .radios label 里的单选框必须收成控件自身宽度：面板全局给 form input 设了
+   100% 宽 + block，直接套到 radio 上会把整行文字挤成竖排（label 高 200~400px）。 */
+.radios input { margin-top: 3px; flex: none; width: auto; display: inline-block; }
 .who { min-width: 118px; max-width: 200px; }
 #taskTable .who { max-width: 360px; }
 #taskTable .who .nm, #taskTable .who .id { white-space: normal; word-break: break-all; }
@@ -482,14 +496,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 10px; padding: 14px 17px 2px; }
   .kpis.k4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  /* k7：用量总览七张卡（含平均缓存命中率）。宽屏一行放下；中屏折 4 列（4+3），
+  /* k8：用量总览八张卡（含平均缓存命中率与积分）。宽屏一行放下；中屏折 4 列（4+4），
      窄屏与基础栅格一样 2 列。 */
-  .kpis.k7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .kpis.k8 { grid-template-columns: repeat(8, minmax(0, 1fr)); }
   @media (max-width: 1180px) {
     .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .kpis.k7 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .kpis.k8 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   }
-  @media (max-width: 700px) { .kpis, .kpis.k4, .kpis.k7 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 700px) { .kpis, .kpis.k4, .kpis.k8 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .kpi {
     position: relative; min-width: 0; overflow: hidden;
     background: var(--surface-2); border: 1px solid var(--line-soft);
@@ -927,27 +941,6 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div id="qcList"></div>
       </div>
 
-      <!-- 官方补偿：带截止日的限时活动，与成长任务同属「今天要不要动手」的事，故放任务中心。
-           取数只在进入本视图 / 点「检查」 / 点领取时发生（补偿状态没有 overview 快照可吃，
-           挂进 5s 刷新就是每 5 秒打上游），倒计时走动由前端对缓存做本地重渲染。 -->
-      <div class="box">
-        <header>
-          <h3>官方补偿 <span class="hint">先查状态再领 · 无待领不发领取请求</span></h3>
-          <span class="grow"></span>
-          <span class="note" id="compNote"></span>
-          <button class="xs" id="btnCompRefresh">检查</button>
-          <button class="xs primary" id="btnCompAll">全部领取</button>
-        </header>
-        <div class="tbl-wrap">
-        <table class="acc">
-          <thead><tr>
-            <th>账号</th><th>状态</th><th class="num">可领</th>
-            <th class="num">距截止</th><th class="c-acts"></th>
-          </tr></thead>
-          <tbody id="compBody"></tbody>
-        </table>
-        </div>
-      </div>
     </section>
 
     <!-- 模型与档位 -->
@@ -1009,7 +1002,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         </div>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th class="c">默认档</th><th>支持的思考档位</th><th class="c">状态</th><th class="c">上下文长度</th><th class="c">最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>网关档位</th><th class="c">上游默认</th><th>支持的思考档位</th><th class="c">状态</th><th class="c">上下文长度</th><th class="c">最大输出</th><th>下游可见</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
@@ -1103,7 +1096,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <span class="trange" id="usRange"></span>
           <button class="xs" id="btnUsage">刷新</button>
         </header>
-        <div class="kpis k7" id="usStats"></div>
+        <div class="kpis k8" id="usStats"></div>
         <div class="pad">
           <div class="uschart">
             <div class="uschart-hd">
@@ -1315,6 +1308,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <label class="fld"><span class="lb">夜猫子参与上限</span>
                 <input name="night_account_cap" type="number" min="0" placeholder="0">
                 <span class="hint">0 = 全池参与。&gt;0 时只在积分最高的前 N 个账号做夜间真实对话。</span></label>
+              <label class="fld"><span class="lb">每轮补签卡上限</span>
+                <input name="makeup_cards_per_round" type="number" min="0" placeholder="0">
+                <span class="hint">0 = 不限（补到卡用光）。&gt;0 时每轮连登管家最多用这么多张，剩下的漏签下一轮继续——补签会改账号历史，保守部署可设 1。</span></label>
             </div>
             <div class="hr"></div>
             <div class="switch"><span class="lb">保号任务覆盖已禁用账号</span>
@@ -1441,9 +1437,31 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                 <option value="identity">identity — 仅 system / developer</option>
               </select>
               <span class="hint">指纹脱敏总开关打开时生效。all 会改写 user / assistant / tool 历史里的同名文本；identity 只改身份消息，用户数据原样透传。</span></label>
+            <div class="switch"><span class="lb">嵌入端点 /v1/embeddings</span>
+              <input type="checkbox" name="embeddings_enabled"></div>
+            <div class="hint">实验特性，默认关闭。上游嵌入模型与对话模型是两套注册表，实测只有 <code>bge-m3</code>（1024 维）可用；
+              关闭时端点仍在但回 403 <code>embeddings_disabled</code>。改动即时生效。</div>
             <div class="switch"><span class="lb">会话粘性路由</span>
               <input type="checkbox" name="session_sticky_enabled"></div>
             <div class="hint" style="margin-top:10px">Upstash Redis 镜像、凭证目录与状态文件路径需手工编辑配置文件（判为重启项）。</div>
+          </div>
+        </div>
+
+        <div class="box">
+          <header><h3>思考档位</h3></header>
+          <div class="pad">
+            <div class="switch"><span class="lb">启用思考档位策略</span>
+              <input type="checkbox" name="thinking_enabled"></div>
+            <label class="fld"><span class="lb">网关优先 / 客户端优先</span>
+              <div class="radios">
+                <label><input type="radio" name="thinking_mode" value="client">
+                  客户端优先：客户端没传档位时才补「网关档位」</label>
+                <label><input type="radio" name="thinking_mode" value="level">
+                  网关优先 · 只覆盖档位：客户端传的档位一律改写为「网关档位」，但尊重客户端「关闭思考」</label>
+                <label><input type="radio" name="thinking_mode" value="all">
+                  网关优先 · 档位与开关一起覆盖：连客户端「关闭思考」也改写成开启 + 「网关档位」</label>
+              </div>
+              <span class="hint">目标档位在「模型与档位」页每行的「网关档位」下拉里选：选项即该模型「支持的思考档位」原样（可关思考的模型另有 off），默认选中最高档；客户端没传档位时网关用它补，模型不支持所选档时落到不高于它的最高支持档</span></label>
           </div>
         </div>
 

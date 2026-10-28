@@ -122,15 +122,19 @@ type Scheduler struct {
 	// atomic 读写，Reconfigure 可热改。0 = 不限（旧行为）。
 	nightAccountCap atomic.Int64
 
-	// compGuardMu/compGuard 补偿「本期已试过」记账（key = uid + "|" + end_time）。
+	// makeupPerRound 每轮连登管家最多用几张补签卡（0 = 不限，补到卡用光）。
+	// atomic 读写，Reconfigure 可热改（schedule.makeup_cards_per_round）。
+	makeupPerRound atomic.Int64
+
+	// benefitGuardMu/benefitGuard 福利领取「本期已试过」记账（key = "gift|" + uid + "|" + end_time）。
 	//
-	// 为什么需要：上游 compensation-status 的 claimed 字段**恒为 false**（2026-10-20 实测，
+	// 为什么需要：上游福利类 status 端点的 claimed 字段**恒为 false**（2026-10-20 实测，
 	// 已领过的号照样回 claimed:false），于是 Pending() 恒真 → 每次签到都重复 claim 一遍
-	// 全池 350 个号，白打请求却永远拿不到新发放。
+	// 全池账号，白打请求却永远拿不到新发放。
 	// 只记进程内：重启后每期再试一次，代价可接受（次数极少），也不会漏掉上游新开的期次
 	// （end_time 变了就是新 key）。
-	compGuardMu sync.Mutex
-	compGuard   map[string]bool
+	benefitGuardMu sync.Mutex
+	benefitGuard   map[string]bool
 
 	// authHealMu/authHealAt 401→refresh 求证的退避记账（uid → 上次求证成功时刻）。
 	// 降级 token（billing 恒 401、chat 仍可用）会让每轮探测都 401，不设退避就是每
@@ -979,6 +983,17 @@ func (s *Scheduler) SetNightAccountCap(n int) {
 
 // NightAccountCap 当前夜间参与上限。
 func (s *Scheduler) NightAccountCap() int { return int(s.nightAccountCap.Load()) }
+
+// SetMakeupCardsPerRound 热改每轮补签卡上限；<0 视为 0（不限）。
+func (s *Scheduler) SetMakeupCardsPerRound(n int) {
+	if n < 0 {
+		n = 0
+	}
+	s.makeupPerRound.Store(int64(n))
+}
+
+// MakeupCardsPerRound 当前每轮补签卡上限（0 = 不限）。
+func (s *Scheduler) MakeupCardsPerRound() int { return int(s.makeupPerRound.Load()) }
 
 // capByCredits 夜间任务候选收窄：按积分降序取前 cap 个（余额未知/相同的顺序不稳定，
 // 但候选集每天基本不变，无需额外确定性）。cap<=0 或候选不超上限时原样返回。

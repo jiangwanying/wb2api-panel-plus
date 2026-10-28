@@ -104,6 +104,10 @@ type Config struct {
 	// 来自 logging.request_client_info（缺省 true）；关闭时 reqlog 事件的来源字段
 	// 保持为空，归档与面板都不出现来源信息。
 	RecordClientInfo bool
+
+	// EmbeddingsEnabled 实验特性 /v1/embeddings 开关的静态回退（features.embeddings_enabled）。
+	// Live 非 nil 时以热快照为准；裸用/单测路径用本字段。
+	EmbeddingsEnabled bool
 }
 
 // loadLive 返回当前运行期快照；Live 为 nil 时用静态字段合成。
@@ -114,13 +118,14 @@ func (h *Handler) loadLive() livecfg.Snapshot {
 	// 白名单静态回退（issue #68）：裸用/单测路径不依赖 Live，与 Hidden 对称。
 	allowed, enabled := livecfg.NormalizeAllowedModels(h.cfg.ModelsAllowed)
 	return livecfg.Snapshot{
-		APIKey:           h.cfg.APIKey,
-		SoftCooldown:     h.cfg.SoftCooldown,
-		RecordClientInfo: h.cfg.RecordClientInfo,
-		HiddenModels:     livecfg.NormalizeHiddenModels(h.cfg.ModelsHidden),
-		AllowedModels:    allowed,
-		AllowlistEnabled: enabled,
-		ModelAliases:     livecfg.NormalizeModelAliases(h.cfg.ModelsAliases),
+		APIKey:            h.cfg.APIKey,
+		SoftCooldown:      h.cfg.SoftCooldown,
+		EmbeddingsEnabled: h.cfg.EmbeddingsEnabled,
+		RecordClientInfo:  h.cfg.RecordClientInfo,
+		HiddenModels:      livecfg.NormalizeHiddenModels(h.cfg.ModelsHidden),
+		AllowedModels:     allowed,
+		AllowlistEnabled:  enabled,
+		ModelAliases:      livecfg.NormalizeModelAliases(h.cfg.ModelsAliases),
 	}
 }
 
@@ -204,6 +209,8 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /v1/responses", h.withAuth(h.responsesWebsocketUnsupported))
 	h.mux.HandleFunc("POST /v1/images/generations", h.withAuth(func(w http.ResponseWriter, r *http.Request) { h.images(w, r, false) }))
 	h.mux.HandleFunc("POST /v1/images/edits", h.withAuth(func(w http.ResponseWriter, r *http.Request) { h.images(w, r, true) }))
+	// 实验特性：OpenAI 兼容嵌入（features.embeddings_enabled，默认关闭；关着时回 403）。
+	h.mux.HandleFunc("POST /v1/embeddings", h.withAuth(h.embeddings))
 	h.mux.HandleFunc("POST /v1/messages", h.withAnthropicAuth(h.messages))
 	h.mux.HandleFunc("POST /messages", h.withAnthropicAuth(h.messages))
 	// 官方 agenttool 联网检索/抓页的网关透传（非对话端点，与 images 同套取号/失败处置）。
@@ -564,11 +571,19 @@ func (h *Handler) modelList() []map[string]any {
 		entry = applyModelInfoFields(entry, mi)
 		// effort 能力透出——远端 supportedEfforts 权威，缺失落到 CN 静态兜底表
 		// （客户端可发现档位，不再盲传）。无档位 → 省略字段。
-		if efforts, def := upstream.EffortListing("cn", mi.ID, mi.Efforts, mi.DefaultEffort); efforts != nil {
+		// 固定档模型（上游只报 default_effort、没有 supportedEfforts，如
+		// mimo-v2.6-pro）：把该默认档当唯一支持档声明出去，客户端看到「只有这一档」
+		// 而不是空列表——面板侧同一口径（单档下拉）。
+		efforts, def := upstream.EffortListing("cn", mi.ID, mi.Efforts, mi.DefaultEffort)
+		if efforts == nil && mi.SupportsReasoning && mi.DefaultEffort != "" {
+			efforts, def = []string{mi.DefaultEffort}, mi.DefaultEffort
+		}
+		if efforts != nil {
 			entry["reasoning_supported_efforts"] = efforts
 			if def != "" {
 				entry["reasoning_default_effort"] = def
 			}
+			h.declareReasoning(entry, "cn", mi.ID, efforts)
 		}
 		out = append(out, entry)
 	}
@@ -602,7 +617,10 @@ func (h *Handler) modelList() []map[string]any {
 			}
 			// context_length / max_output_tokens 四级查找（与 CN 动态分支同口径）。
 			var remoteCtx, remoteOut int64
+			var info upstream.ModelInfo
+			hasInfo := false
 			if mi, ok := globalInfos[id]; ok {
+				info, hasInfo = mi, true
 				entry = applyModelInfoFields(entry, mi)
 				remoteCtx, remoteOut = mi.ContextWindow, mi.MaxTokens
 			}
@@ -610,11 +628,18 @@ func (h *Handler) modelList() []map[string]any {
 			if mo, ok := upstream.MaxOutputTokensListingV4(id, remoteOut, h.cfg.Upstream.HTTP); ok {
 				entry["max_output_tokens"] = mo
 			}
-			if efforts, def := upstream.EffortListing("global", id, globalEfforts[id], globalDefaults[id]); efforts != nil {
+			// 固定档模型与 CN 分支同口径：只报默认档、没有档位表时，把该默认档
+			// 当唯一支持档声明（否则 global 列表上这类模型看起来「没有思考能力」）。
+			efforts, def := upstream.EffortListing("global", id, globalEfforts[id], globalDefaults[id])
+			if efforts == nil && hasInfo && info.SupportsReasoning && info.DefaultEffort != "" {
+				efforts, def = []string{info.DefaultEffort}, info.DefaultEffort
+			}
+			if efforts != nil {
 				entry["reasoning_supported_efforts"] = efforts
 				if def != "" {
 					entry["reasoning_default_effort"] = def
 				}
+				h.declareReasoning(entry, "global", id, efforts)
 			}
 			out = append(out, entry)
 		}

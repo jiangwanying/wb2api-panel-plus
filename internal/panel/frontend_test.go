@@ -1346,6 +1346,10 @@ func TestConfigFormMatchesCFGMap(t *testing.T) {
 	}
 
 	// 1) 表单里的每个 name 都要有 CFG_MAP 条目（否则收集/回填都拿不到它）。
+	// 例外：复合控件不是 1:1 配置键，由 collectConfig 显式拆成多个既有键提交——
+	// thinking_mode（三选一单选组）→ thinking.client_priority + thinking.override_scope，
+	// 配置格式保持不变（手改配置文件仍是这两个字段）。
+	composite := map[string]bool{"thinking_mode": true}
 	f := html[strings.Index(html, `<form id="cfgForm">`):]
 	f = f[:strings.Index(f, "</form>")]
 	names := map[string]bool{}
@@ -1356,6 +1360,9 @@ func TestConfigFormMatchesCFGMap(t *testing.T) {
 		t.Fatal("未从配置表单解析出任何 name 字段")
 	}
 	for n := range names {
+		if composite[n] {
+			continue
+		}
 		if !inMap(n) {
 			t.Errorf("表单字段 %q 在 CFG_MAP 里没有条目（保存时会被静默丢弃）", n)
 		}
@@ -1668,186 +1675,9 @@ func TestPanelRemarkWiring(t *testing.T) {
 	}
 }
 
-// TestAppJSCompensationCard 官方补偿卡片（上游 PR #196）：待领显形 + 跳过带原因 +
-// 失败红行 + ≤48h 标红 + 领取按钮只出现在待领行。
-//
-// 为什么值得一测：这张卡的全部价值就是「看不见的状态变成看得见」——渲染层若把
-// 跳过/失败行吞掉，就把「查不到」显示成「没有补偿」，正是本改动要消灭的界面谎言。
-func TestAppJSCompensationCard(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed; compensation card test skipped")
-	}
-	script := `const fs = require('fs');
-const vm = require('vm');
-const src = fs.readFileSync(process.argv[2], 'utf8');
-const start = src.indexOf('/* ══ 官方补偿（上游 PR #196）');
-const end = src.indexOf('let lastPackages');
-if (start < 0 || end < start) throw new Error('compensation block not found');
-// 收纳行的点击处理在到期提醒那段（两个卡片共用），单独切过来一起跑。
-// restOpen 是模块级状态（渲染重建 tbody 后靠它恢复展开态），这里按真实作用域声明。
-const tStart = src.indexOf('// 按 restOpen 把指定 tbody 的收纳行');
-const tEnd = src.indexOf("bindRestToggle('compBody');") + "bindRestToggle('compBody');".length;
-if (tStart < 0 || tEnd < tStart) throw new Error('bindRestToggle not found');
-const toggleSrc = 'const restOpen = Object.create(null);\n' + src.slice(tStart, tEnd);
-const els = {};
-function el(id) {
-  if (!els[id]) els[id] = {
-    textContent: '', innerHTML: '', hidden: false, rows: [], btn: null, handlers: {},
-    addEventListener(ev, fn) { this.handlers[ev] = fn; },
-    querySelector(sel) { return sel === 'button[data-exp-rest]' ? this.btn : null; },
-    querySelectorAll() { return this.rows; },
-  };
-  return els[id];
-}
-const now = Date.parse('2026-10-20T00:00:00+08:00');
-class FakeDate extends Date { static now() { return now; } }
-const ctx = {
-  Date: FakeDate, Math, Number, String, JSON, encodeURIComponent,
-  PK_DAY_MS: 86400000,
-  $: el,
-  esc: (s) => String(s == null ? '' : s),
-  fmtTok: (n) => String(n),
-  toast: () => {},
-  api: async () => ({}),
-};
-vm.createContext(ctx);
-vm.runInContext("'use strict';\n" + src.slice(start, end) + '\n' + toggleSrc +
-  '\nthis.renderCompensation = renderCompensation; this.setData = (d) => { compData = d; };' +
-  ' this.applyRestToggle = applyRestToggle; this.restOpen = restOpen;', ctx);
-
-ctx.setData({ errored: 1, accounts: [
-  { uid: 'bbbbbbbb-2', nickname: '已领号', active: true, claimed: true, credit: 500, end_time: '2026-10-22 23:59:59' },
-  { uid: 'cccccccc-3', nickname: '跳过号', skip: true, skip_reason: '国际区账号不适用国内区补偿' },
-  { uid: 'dddddddd-4', nickname: '失败号', error: 'boom' },
-  { uid: 'eeeeeeee-5', nickname: '无活动号' },
-  { uid: 'aaaaaaaa-1', nickname: '待领号', active: true, claimed: false, credit: 500, end_time: '2026-10-21 23:59:59' },
-] });
-ctx.renderCompensation();
-const body = els['compBody'].innerHTML;
-const note = els['compNote'].innerHTML;
-process.stdout.write(JSON.stringify({
-  hasPending: body.includes('待领'),
-  pendingBtn: body.includes('data-comp="aaaaaaaa-1"'),
-  claimedNoBtn: !body.includes('data-comp="bbbbbbbb-2"'),
-  skipLine: body.includes('跳过') && body.includes('国际区账号不适用国内区补偿'),
-  failLine: body.includes('查询/领取失败'),
-  noActivity: body.includes('无活动'),
-  soonRed: body.includes('var(--bad)'),
-  notePending: note.includes('待领 1 个'),
-  noteErrored: note.includes('1 个查询失败'),
-  // 收纳：待领排最前、只展开前 3 行、其余 2 行收在 hidden 里、收纳按钮带计数
-  pendingFirst: body.indexOf('待领号') < body.indexOf('已领号'),
-  hiddenRows: (body.match(/data-exp-row="rest" hidden/g) || []).length,
-  toggle: body.includes('data-exp-rest="2"') && body.includes('其余 2 个账号，展开'),
-  // 点一次收纳按钮：2 行必须真展开（展开逻辑与到期提醒共用 bindRestToggle）；
-  // 再模拟一次 5s 轮询重渲染，展开态必须由 restOpen 恢复，而不是被收回。
-  expandWorks: (() => {
-    const tbody = els['compBody'];
-    tbody.rows = [{ hidden: true }, { hidden: true }];
-    tbody.btn = {
-      dataset: { expRest: '2' }, textContent: '其余 2 个账号，展开', attrs: { 'aria-expanded': 'false' },
-      getAttribute(k) { return this.attrs[k]; },
-      setAttribute(k, v) { this.attrs[k] = v; },
-    };
-    const click = () => tbody.handlers.click({
-      target: { closest: (sel) => (sel === 'button[data-exp-rest]' ? tbody.btn : null) },
-    });
-    click();
-    const opened = tbody.rows.every(r => r.hidden === false) &&
-      tbody.btn.textContent === '收起其余 2 个账号' &&
-      tbody.btn.attrs['aria-expanded'] === 'true';
-    // 重渲染：新行/新按钮回到折叠默认态，再由 applyRestToggle 恢复。
-    tbody.rows = [{ hidden: true }, { hidden: true }];
-    tbody.btn = {
-      dataset: { expRest: '2' }, textContent: '其余 2 个账号，展开', attrs: { 'aria-expanded': 'false' },
-      getAttribute(k) { return this.attrs[k]; },
-      setAttribute(k, v) { this.attrs[k] = v; },
-    };
-    ctx.applyRestToggle(tbody, ctx.restOpen.compBody);
-    const survived = tbody.rows.every(r => r.hidden === false) &&
-      tbody.btn.textContent === '收起其余 2 个账号';
-    click();
-    return opened && survived && tbody.rows.every(r => r.hidden === true) &&
-      tbody.btn.textContent === '其余 2 个账号，展开';
-  })(),
-}));`
-	f, err := os.CreateTemp(t.TempDir(), "comp-card-*.cjs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString(script); err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
-	if err != nil {
-		t.Fatalf("compensation card node test failed: %v\n%s", err, out)
-	}
-	const want = `{"hasPending":true,"pendingBtn":true,"claimedNoBtn":true,"skipLine":true,` +
-		`"failLine":true,"noActivity":true,"soonRed":true,"notePending":true,"noteErrored":true,` +
-		`"pendingFirst":true,"hiddenRows":2,"toggle":true,"expandWorks":true}`
-	if strings.TrimSpace(string(out)) != want {
-		t.Fatalf("补偿卡片渲染不符:\n got=%s\nwant=%s", strings.TrimSpace(string(out)), want)
-	}
-}
-
-// TestPanelCompensationWiring 接线齐备性：少一个 id 或漏一个绑定，表现为「按钮点了没反应」，
-// 而 Go 编译、JS 语法检查、顶层冒烟都发现不了。
-func TestPanelCompensationWiring(t *testing.T) {
-	html, err := os.ReadFile("index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`id="compNote"`, `id="compBody"`, `id="btnCompRefresh"`, `id="btnCompAll"`,
-	} {
-		if !bytes.Contains(html, []byte(want)) {
-			t.Fatalf("index.html 缺少 %s", want)
-		}
-	}
-	// 卡片必须落在「任务中心」视图内（它讲的是「今天要不要动手」，与成长任务同处）——
-	// 只查 id 存在的话，放回账号池视图也照样通过。
-	tc := bytes.Index(html, []byte(`id="view-taskscenter"`))
-	next := bytes.Index(html[tc+1:], []byte(`<section class="view"`))
-	if tc < 0 || next < 0 {
-		t.Fatal("定位不到任务中心视图边界")
-	}
-	for _, id := range []string{`id="compNote"`, `id="compBody"`, `id="btnCompAll"`} {
-		at := bytes.Index(html, []byte(id))
-		if at < tc || at > tc+1+next {
-			t.Fatalf("%s 不在任务中心视图内（视图区间 %d..%d，实际 %d）", id, tc, tc+1+next, at)
-		}
-	}
-	js, err := os.ReadFile("app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"function renderCompensation(",
-		"function loadCompensation(",
-		"function claimCompensation(",
-		"function claimCompensationAll(",
-		"$('btnCompRefresh').onclick",
-		"$('btnCompAll').onclick",
-	} {
-		if !bytes.Contains(js, []byte(want)) {
-			t.Fatalf("app.js 缺少 %s", want)
-		}
-	}
-	// 取数时机随卡片一起搬：进任务中心按需拉（compData 空才打上游），start() 不再拉。
-	if !bytes.Contains(js, []byte("if (v === 'taskscenter') { reattachQueueView(); if (!compData) loadCompensation(); }")) {
-		t.Error("app.js 未在进入任务中心时按需拉取补偿状态")
-	}
-	start := bytes.Index(js, []byte("function start() {"))
-	if start < 0 {
-		t.Fatal("找不到 start()")
-	}
-	if bytes.Contains(js[start:start+200], []byte("loadCompensation()")) {
-		t.Error("start() 仍在首屏拉补偿状态（已随卡片搬走）")
-	}
-}
-
+// TestAppJSModelBusyTag 模型行渲染行为：五档分级配色（正常绿 / 繁忙黄 / 拥堵橙 / 不可用红 / 未知灰）。
+// idle/normal 与缺字段必须安静——「模型与档位」是唯一能看到 congested/unavailable 的地方。
+// 行为断言而非字符串断言：后者在 `if (false)` 这种「代码在但永远不跑」下仍会通过。
 func TestAppJSModelBusyTag(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

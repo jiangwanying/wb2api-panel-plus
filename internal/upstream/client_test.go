@@ -389,6 +389,66 @@ func TestFetchModelsEffortsDriveBodyDowngrade(t *testing.T) {
 	}
 }
 
+func TestEffortPolicyWiredThroughChatStream(t *testing.T) {
+	// 策略接线测试：SetEffortPolicy → prepareBody → 出站 JSON。单元测试直接调
+	// applyEffortPolicy，这条补上「客户端实例真的把策略带进请求」的缺口。
+	var outbound []byte
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/console/enterprises/personal/models"):
+			return jsonResp(200, `{"code":0,"data":{"models":[
+				{"id":"glm-5.2","name":"GLM-5.2","maxInputTokens":131072,"maxOutputTokens":8192,"reasoning":{"effort":"high","supportedEfforts":["low","high"]}}
+			],"agents":[{"name":"cli","models":["glm-5.2"]}]}}`), nil
+		case strings.HasSuffix(r.URL.Path, "/v3/config"):
+			return jsonResp(200, `{"code":0,"data":{"models":[]}}`), nil
+		default:
+			outbound, _ = io.ReadAll(r.Body)
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			}, nil
+		}
+	})
+	a := &auth.Auth{AccessToken: "at", UID: "u1"}
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatalf("fetch models: %v", err)
+	}
+	send := func(body string) map[string]any {
+		t.Helper()
+		rc, status, _, err := c.ChatStream(a, []byte(body), "", ChatMeta{})
+		if err != nil || status != 200 {
+			t.Fatalf("chat: status=%d err=%v", status, err)
+		}
+		rc.Close()
+		var m map[string]any
+		if err := json.Unmarshal(outbound, &m); err != nil {
+			t.Fatalf("outbound unmarshal: %v (%s)", err, outbound)
+		}
+		return m
+	}
+
+	c.SetEffortPolicy(&EffortPolicy{Enabled: true, DefaultEffort: "max", OverrideScope: OverrideScopeLevel})
+	// 客户端没发档位 → 网关补 max 解析后的最高档 high
+	if got := send(`{"model":"glm-5.2","messages":[]}`)["reasoning_effort"]; got != "high" {
+		t.Errorf("filled effort=%v want high", got)
+	}
+	// 网关优先 → 客户端 low 被改写 high
+	if got := send(`{"model":"glm-5.2","reasoning_effort":"low","messages":[]}`)["reasoning_effort"]; got != "high" {
+		t.Errorf("gateway-priority effort=%v want high", got)
+	}
+	// 客户端优先 → 保留 low
+	c.SetEffortPolicy(&EffortPolicy{Enabled: true, ClientPriority: true, DefaultEffort: "max"})
+	if got := send(`{"model":"glm-5.2","reasoning_effort":"low","messages":[]}`)["reasoning_effort"]; got != "low" {
+		t.Errorf("client-priority effort=%v want low", got)
+	}
+	// 策略关闭 → 逐字节透传（只剩既有的支持档钳制，low 本身合规）
+	c.SetEffortPolicy(&EffortPolicy{Enabled: false, DefaultEffort: "max"})
+	if got := send(`{"model":"glm-5.2","messages":[]}`)["reasoning_effort"]; got != nil {
+		t.Errorf("policy off should not inject, got %v", got)
+	}
+}
+
 func TestChatStreamHardCreditError(t *testing.T) {
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		return jsonResp(402, `{"code":1,"msg":"余额不足"}`), nil

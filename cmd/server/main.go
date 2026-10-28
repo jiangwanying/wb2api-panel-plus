@@ -209,6 +209,20 @@ func main() {
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints)
 	up.SanitizeBrandScope.Store(cfg.Features.SanitizeBrandScope)
+	// 思考档位策略（thinking 节）：启动装载，面板保存配置时经 saveConfig 热更新。
+	up.SetEffortPolicy(effortPolicyOf(cfg))
+	if cfg.Thinking.Enabled {
+		priority := "客户端优先（只在缺档时补默认档）"
+		if !cfg.Thinking.ClientPriority {
+			priority = "网关优先（改写客户端档位）"
+			if cfg.Thinking.OverrideScope == "all" {
+				priority = "网关优先（档位与关闭意图一起覆盖）"
+			}
+		}
+		log.Printf("思考档位策略：默认档 %s；%s", cfg.Thinking.DefaultEffort, priority)
+	} else {
+		log.Printf("思考档位策略已关闭（不补档、不改写客户端档位）")
+	}
 	if cfg.Features.SanitizeBlacklistFingerprints {
 		if cfg.Features.SanitizeBrandScope == "identity" {
 			log.Printf("指纹脱敏已启用；品牌词规则仅作用于 system/developer（features.sanitize_brand_scope=identity）")
@@ -353,6 +367,7 @@ func main() {
 		APIKey:               cfg.APIKey,
 		SoftCooldown:         cfg.SoftRateDur,
 		SanitizeFingerprints: cfg.Features.SanitizeBlacklistFingerprints,
+		EmbeddingsEnabled:    cfg.Features.EmbeddingsEnabled,
 		RecordClientInfo:     cfg.Logging.RequestClientInfo,
 		HiddenModels:         livecfg.NormalizeHiddenModels(cfg.Models.Hidden),
 		// 模型白名单（issue #68）：归一化集合 + 启用标志；空配置 = 不启用。
@@ -361,6 +376,12 @@ func main() {
 		ModelAliases:     livecfg.NormalizeModelAliases(cfg.Models.Aliases),
 		// 模型降级路由表（pool.model_fallback）：6004 限流时同账号改用等价模型。
 		ModelFallback: cfg.Pool.ModelFallback,
+		// 思考档位策略镜像：面板「模型与档位」页的「网关档位」列据此显示当前生效值。
+		ThinkingEnabled:        cfg.Thinking.Enabled,
+		ThinkingDefaultEffort:  cfg.Thinking.DefaultEffort,
+		ThinkingClientPriority: cfg.Thinking.ClientPriority,
+		ThinkingOverrideScope:  cfg.Thinking.OverrideScope,
+		ThinkingModelDefaults:  cfg.Thinking.ModelDefaults,
 	})
 	// 用量记录器：与 state 文件同目录，随 state_file 配置一起搬移。
 	// datapath 由 state 文件路径推出，避免再加一个配置项。
@@ -522,6 +543,7 @@ func main() {
 	go sch.Run(ctx)
 	sch.SetJitter(cfg.Schedule.BalanceRefreshJitterPermill, cfg.Schedule.TaskSweepJitterPermill)
 	sch.SetNightAccountCap(cfg.Schedule.NightAccountCap)
+	sch.SetMakeupCardsPerRound(cfg.Schedule.MakeupCardsPerRound)
 	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 	sch.StartTaskSweep(ctx, cfg.TaskSweepInterval)
 	if cfg.Alerting.Enabled {
@@ -724,6 +746,21 @@ func writeConfigInPlace(path string, out []byte) error {
 	return werr
 }
 
+// effortPolicyOf 把 config thinking 节转成 upstream 运行时策略。nil 配置/
+// 未启用时返回的策略由 Client.SetEffortPolicy 统一处理（Enabled=false 即不生效）。
+func effortPolicyOf(cfg *Config) *upstream.EffortPolicy {
+	if cfg == nil {
+		return nil
+	}
+	return &upstream.EffortPolicy{
+		Enabled:        cfg.Thinking.Enabled,
+		DefaultEffort:  cfg.Thinking.DefaultEffort,
+		ClientPriority: cfg.Thinking.ClientPriority,
+		OverrideScope:  cfg.Thinking.OverrideScope,
+		ModelDefaults:  cfg.Thinking.ModelDefaults,
+	}
+}
+
 func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, gw *server.Handler, pn *panel.Panel, running ...*Config) ([]string, error) {
 	// 1) 解析原始 JSON 为 map（保留用户手写的未知键），再叠加面板提交的键。
 	oldRaw, err := os.ReadFile(path)
@@ -798,15 +835,24 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		APIKey:               newCfg.APIKey,
 		SoftCooldown:         newCfg.SoftRateDur,
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
+		EmbeddingsEnabled:    newCfg.Features.EmbeddingsEnabled,
 		RecordClientInfo:     newCfg.Logging.RequestClientInfo,
 		HiddenModels:         livecfg.NormalizeHiddenModels(newCfg.Models.Hidden),
 		// 白名单热生效：与 HiddenModels 同一条快照重建通路（issue #68）。
 		AllowedModels:    newAllowedModels,
 		AllowlistEnabled: newAllowlistEnabled,
 		ModelAliases:     livecfg.NormalizeModelAliases(newCfg.Models.Aliases),
+		// 思考档位策略镜像：与 up.SetEffortPolicy 同批热更新，面板立即回显新生效值。
+		ThinkingEnabled:        newCfg.Thinking.Enabled,
+		ThinkingDefaultEffort:  newCfg.Thinking.DefaultEffort,
+		ThinkingClientPriority: newCfg.Thinking.ClientPriority,
+		ThinkingOverrideScope:  newCfg.Thinking.OverrideScope,
+		ThinkingModelDefaults:  newCfg.Thinking.ModelDefaults,
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	up.SanitizeBrandScope.Store(newCfg.Features.SanitizeBrandScope)
+	// 思考档位策略热生效：改默认档 / 切换客户端优先或作用域后，下一次 chat 即按新策略。
+	up.SetEffortPolicy(effortPolicyOf(newCfg))
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)
@@ -846,6 +892,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetJitter(newCfg.Schedule.BalanceRefreshJitterPermill, newCfg.Schedule.TaskSweepJitterPermill)
 	sch.SetNightAccountCap(newCfg.Schedule.NightAccountCap)
+	sch.SetMakeupCardsPerRound(newCfg.Schedule.MakeupCardsPerRound)
 	if pn != nil {
 		pn.SetGrowthConcurrency(newCfg.Schedule.GrowthConcurrency) // 排程轮次并发热生效
 	}

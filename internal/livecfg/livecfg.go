@@ -16,11 +16,14 @@ import (
 
 // Snapshot 一次读取的不可变配置视图。
 type Snapshot struct {
-	APIKey               string              // 网关/面板共同鉴权密钥；空 = 不鉴权
-	SoftCooldown         time.Duration       // 429/限流软冷却基数（<=0 时调用方回退内置默认）
-	SanitizeFingerprints bool                // 出站请求体指纹脱敏
-	RecordClientInfo     bool                // 请求日志是否记录调用来源（客户端 IP / UA）
-	HiddenModels         map[string]struct{} // 精确隐藏的模型 id（已归一化为 "cn:x"/"global:x" 全量形式）；nil = 不隐藏
+	APIKey               string        // 网关/面板共同鉴权密钥；空 = 不鉴权
+	SoftCooldown         time.Duration // 429/限流软冷却基数（<=0 时调用方回退内置默认）
+	SanitizeFingerprints bool          // 出站请求体指纹脱敏
+	// EmbeddingsEnabled 实验特性 /v1/embeddings 总开关（features.embeddings_enabled）；
+	// 默认 false，面板保存后热生效。
+	EmbeddingsEnabled bool                // 嵌入端点开关
+	RecordClientInfo  bool                // 请求日志是否记录调用来源（客户端 IP / UA）
+	HiddenModels      map[string]struct{} // 精确隐藏的模型 id（已归一化为 "cn:x"/"global:x" 全量形式）；nil = 不隐藏
 	// AllowedModels 模型白名单（config models.allowed，issue #68）：已归一化为
 	// "cn:x"/"global:x" 全量形式的精确 id 集合；nil = 未启用（默认放行所有模型）。
 	// 与 HiddenModels 完全对称：Hidden 是「可见集合再剔除」，Allowed 是「可能可见」集合。
@@ -32,6 +35,14 @@ type Snapshot struct {
 	// 的等价模型（裸名 → 裸名）。nil = 不降级。与 aliases 的区别：aliases 是
 	// 「客户端名→真实名」的静态映射，本表是「限流时的临时改道」，且不写持久状态。
 	ModelFallback map[string]string
+	// Thinking* 网关卡点思考档位策略（config thinking 节）的只读镜像。出站改写由
+	// upstream.Client 自己持有 EffortPolicy；这里只给面板「网关档位」列算**当前生效值**，
+	// 让模型列表与真实注入口径一致（含按模型覆盖 model_defaults 的域精确键）。
+	ThinkingEnabled        bool
+	ThinkingDefaultEffort  string
+	ThinkingClientPriority bool
+	ThinkingOverrideScope  string
+	ThinkingModelDefaults  map[string]string
 }
 
 // NormalizeModelAliases 把用户配置的 aliases 条目（"客户端名=真实模型名"）归一化为查找表。

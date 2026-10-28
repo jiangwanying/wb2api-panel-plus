@@ -573,8 +573,18 @@ func TestLogChatRowShowsThinkingTokens(t *testing.T) {
 		logChatRow(1200*time.Millisecond, 8*time.Second, "deepseek-v4.1-flash", "stream",
 			"u123456789", "示例号", http.StatusOK, 1450, 0, 0, false)
 	})
-	if strings.Contains(out2, "effort=") {
-		t.Errorf("未携带档位的请求行不应出现 effort=: %s", out2)
+	// 没带档位的行也要给出 effort=-：读者才能区分「网关没补档」和「行里没这一列」。
+	if !strings.Contains(out2, "effort=-") {
+		t.Errorf("无档位请求行应显示 effort=-: %s", out2)
+	}
+	// 客户端关思考（off）：生效档位被清空，行里显示客户端原值而不是完全省略。
+	outOff := captureStdout(t, func() {
+		logChatRowFull(1200*time.Millisecond, 8*time.Second, "deepseek-v4.1-flash", "stream",
+			"u123456789", "示例号", http.StatusOK, 1450, -1, 0, 0, false,
+			"req-z", reqlog.OutcomeSuccess, 1, 0.02, true, "", "", 15*time.Millisecond, 1400*time.Millisecond, "", "off")
+	})
+	if !strings.Contains(outOff, "effort=off") {
+		t.Errorf("关思考请求行应显示 effort=off: %s", outOff)
 	}
 	if strings.Contains(out2, "think=") {
 		t.Errorf("think= 不该出现在没有该观测的行里: %s", out2)

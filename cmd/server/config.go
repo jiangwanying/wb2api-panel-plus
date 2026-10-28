@@ -15,6 +15,7 @@ import (
 
 	"github.com/jiangwanying/wb2api-panel-plus/internal/prompt"
 	"github.com/jiangwanying/wb2api-panel-plus/internal/safefile"
+	"github.com/jiangwanying/wb2api-panel-plus/internal/upstream"
 )
 
 // Config 顶层配置。
@@ -165,6 +166,15 @@ type Config struct {
 		// 不会全部账号都在夜里有活动。夜猫子是唯一「整任务都是真实模型对话」的
 		// 任务，指纹最重，故只收窄它；白天任务（签到/旅行/成长）仍全池保号。
 		NightAccountCap int `json:"night_account_cap"` // 缺省 0（不限）；>0 = Top-N 按积分
+
+		// MakeupCardsPerRound 每轮连登管家最多用几张补签卡，0 = 不限（补到卡用光，
+		// 即 2026-10 之前的行为）。
+		//
+		// 为什么留一个上限：补签是**会改账号历史**的写操作，一次把当月漏签全补齐
+		// （对照实现 workbuddy-scheduled-tasks 的策略是「每轮最多 1 张」，理由写明
+		// 「无卡/无断点/数据异常一律跳过，绝不瞎补」）。这里默认不动既有行为，
+		// 想保守的部署把它设成 1 即可——两轮之间还有次日签到，急不来。
+		MakeupCardsPerRound int `json:"makeup_cards_per_round"` // 缺省 0（不限）；>0 = 每轮上限
 	} `json:"schedule"`
 
 	Global struct {
@@ -235,6 +245,12 @@ type Config struct {
 		// SanitizeBrandScope 身份类规则（品牌词）作用域："all" = 所有消息角色（默认，与上游既有行为一致）；
 		// "identity" = 仅 system/developer，其余角色按用户数据原样透传（features.sanitize_brand_scope）。
 		SanitizeBrandScope string `json:"sanitize_brand_scope"`
+		// EmbeddingsEnabled 实验特性：OpenAI 兼容嵌入端点 /v1/embeddings 的总开关。
+		// 默认关闭——上游嵌入只注册了 bge-m3 一个模型（1024 维），实际可用性随账号/租户
+		// 而异，且与对话模型是两套注册表，不适合默认敞开。面板保存后经 livecfg 热生效。
+		// 关闭时端点仍在，但回 403 embeddings_disabled（而不是 404：让调用方看得出
+		// 「功能存在、只是没开」，不用去猜路径拼错）。
+		EmbeddingsEnabled bool `json:"embeddings_enabled"`
 	} `json:"features"`
 
 	Models struct {
@@ -259,6 +275,31 @@ type Config struct {
 		// 面板保存后经 livecfg 热生效，无需重启。
 		Aliases []string `json:"aliases"`
 	} `json:"models"`
+
+	// Thinking 网关思考档位策略（issue #18 / #21）。网关按模型声明的
+	// supportedEfforts 解析目标档：缺档时补默认档，可按开关以网关优先改写客户端
+	// 档位；面板保存后经 upstream.Client.SetEffortPolicy 热生效，无需重启。
+	Thinking struct {
+		// Enabled 策略总开关。false = 网关完全不碰档位（只剩既有 injectThinking
+		// 与降级管线），老配置不写本键时按 Default() 的 true 生效。
+		Enabled bool `json:"enabled"`
+		// DefaultEffort 网关目标档。取值 "max"（默认；取模型支持的最高档）或
+		// low/medium/high/xhigh 等具体档位（模型不支持时落到 ≤ 该档的最高支持档）。
+		// 对 deepseek 等缺档请求，网关会同时注入 thinking.type=enabled。
+		DefaultEffort string `json:"default_effort"`
+		// ClientPriority true = 客户端优先：客户端发了档位就照单全收（含 off），
+		// 只在客户端没发时补 DefaultEffort；false = 网关优先，按 OverrideScope 改写。
+		ClientPriority bool `json:"client_priority"`
+		// OverrideScope 网关优先的作用域（ClientPriority=false 时生效）：
+		//   "level"（默认）= 只覆盖档位，客户端「关闭思考」（off/none/disabled 或
+		//       thinking.type=disabled）一律尊重；
+		//   "all" = 档位与开关一起覆盖：客户端的关闭意图也会被改写成开启 + 目标档。
+		OverrideScope string `json:"override_scope"`
+		// ModelDefaults 按模型覆盖 DefaultEffort：键 "cn:model" / "global:model"
+		// （精确到域）或裸 "model"（两域共用）；值 "max"/"high"/…，或 "inherit"
+		// 表示不覆盖。解析时剔除空值与 inherit，键值统一转小写。
+		ModelDefaults map[string]string `json:"model_defaults,omitempty"`
+	} `json:"thinking"`
 
 	Prompt struct {
 		// Mode passthrough（默认）= 透传客户端原始 system（降级重试仍会切到 Degraded）；
@@ -462,6 +503,12 @@ func Default() *Config {
 	c.Features.SanitizeBlacklistFingerprints = true
 	c.Features.SanitizeBrandScope = "all"
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
+	// 思考档位策略缺省：网关按模型最高档补缺档请求，但客户端显式档位优先
+	// （client_priority=true），且不覆盖客户端的关闭思考意图（override_scope=level）。
+	c.Thinking.Enabled = true
+	c.Thinking.DefaultEffort = "max"
+	c.Thinking.ClientPriority = true
+	c.Thinking.OverrideScope = "level"
 	c.Pool.MaxInFlight = 3
 	// MaxInFlightGlobal 缺省 2：global 域 WAF 风控更紧，压低单号并发（WAF 403 修复
 	// P1-1）；0/负数 normalize 回落默认（与 max_in_flight 的 0=不限语义不同，分档键
@@ -650,6 +697,23 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_PROMPT_FILE"); v != "" {
 		c.Prompt.File = v
 	}
+	// 思考档位策略（thinking 节）。bool 解析失败视为不生效（与其它 env 同口径）。
+	if v := os.Getenv("WB2A_THINKING_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Thinking.Enabled = b
+		}
+	}
+	if v := os.Getenv("WB2A_THINKING_DEFAULT_EFFORT"); v != "" {
+		c.Thinking.DefaultEffort = v
+	}
+	if v := os.Getenv("WB2A_THINKING_CLIENT_PRIORITY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Thinking.ClientPriority = b
+		}
+	}
+	if v := os.Getenv("WB2A_THINKING_OVERRIDE_SCOPE"); v != "" {
+		c.Thinking.OverrideScope = v
+	}
 	if v := os.Getenv("WB2A_EXPIRING_SOON"); v != "" {
 		c.Pool.ExpiringSoon = v
 	}
@@ -740,6 +804,10 @@ func (c *Config) EnvironmentManagedFields() []string {
 		{"WB2A_SANITIZE_FINGERPRINTS", "features.sanitize_blacklist_fingerprints", "bool"},
 		{"WB2A_SANITIZE_BRAND_SCOPE", "features.sanitize_brand_scope", ""},
 		{"WB2A_PROMPT_MODE", "prompt.mode", ""}, {"WB2A_PROMPT_FILE", "prompt.file", ""},
+		{"WB2A_THINKING_ENABLED", "thinking.enabled", "bool"},
+		{"WB2A_THINKING_DEFAULT_EFFORT", "thinking.default_effort", ""},
+		{"WB2A_THINKING_CLIENT_PRIORITY", "thinking.client_priority", "bool"},
+		{"WB2A_THINKING_OVERRIDE_SCOPE", "thinking.override_scope", ""},
 		{"WB2A_EXPIRING_SOON", "pool.expiring_soon", ""}, {"WB2A_PREFER_EXPIRING", "pool.prefer_expiring", "bool"},
 		{"WB2A_SCHEDULE_JITTER_MINUTES", "schedule.jitter_minutes", "int"},
 		{"WB2A_SCHEDULE_ACCOUNT_SPREAD_MINUTES", "schedule.account_spread_minutes", "int"},
@@ -789,6 +857,9 @@ func splitCSV(raw string) []string {
 
 func (c *Config) normalize() error {
 	var err error
+	if err = c.normalizeThinking(); err != nil {
+		return err
+	}
 	if c.Panel.PackageDetailLimit <= 0 {
 		c.Panel.PackageDetailLimit = 5
 	}
@@ -1052,6 +1123,9 @@ func (c *Config) normalize() error {
 	if c.Schedule.NightAccountCap < 0 {
 		return fmt.Errorf("schedule.night_account_cap: %d 非法（0 = 不限，>0 = Top-N）", c.Schedule.NightAccountCap)
 	}
+	if c.Schedule.MakeupCardsPerRound < 0 {
+		return fmt.Errorf("schedule.makeup_cards_per_round: %d 非法（0 = 不限，>0 = 每轮上限）", c.Schedule.MakeupCardsPerRound)
+	}
 	if err := c.validateScheduleHours(); err != nil {
 		return err
 	}
@@ -1064,6 +1138,47 @@ func (c *Config) normalize() error {
 // custom/append 模式下 file 非空但不可读 → 报错（fail fast），file 空 → 用内置默认
 // （两模式共用同一加载路径，PromptText 均非空）。
 // passthrough 模式不加载文本（透传客户端原始 system，文本在降级时用 prompt.Degraded）。
+// normalizeThinking 校验并规范化 thinking 节（思考档位策略）。
+//
+// 空串回落默认；非法档位 / 作用域 fail fast——静默丢弃会让「面板填了 high」
+// 悄悄按 max 跑，用户无从判断策略是否生效。thinking.model_defaults 的 val 为
+// "" 或 "inherit" 表示「不覆盖」（等价于删除该键），用于面板「恢复全局默认」；
+// val 可以是 off（该模型在网关侧固定关闭思考），全局 default_effort 不允许 off。
+func (c *Config) normalizeThinking() error {
+	c.Thinking.DefaultEffort = strings.ToLower(strings.TrimSpace(c.Thinking.DefaultEffort))
+	if c.Thinking.DefaultEffort == "" {
+		c.Thinking.DefaultEffort = "max"
+	}
+	if c.Thinking.DefaultEffort == "off" || !upstream.IsEffortLevel(c.Thinking.DefaultEffort) {
+		return fmt.Errorf("thinking.default_effort: %q 不是合法档位（max 或 low/medium/high/xhigh 等）", c.Thinking.DefaultEffort)
+	}
+	scope := strings.ToLower(strings.TrimSpace(c.Thinking.OverrideScope))
+	if scope == "" {
+		scope = "level"
+	}
+	if scope != "level" && scope != "all" {
+		return fmt.Errorf("thinking.override_scope: %q 不是合法作用域（level = 只覆盖档位、保留关闭意图；all = 档位与开关一起覆盖）", c.Thinking.OverrideScope)
+	}
+	c.Thinking.OverrideScope = scope
+	out := make(map[string]string, len(c.Thinking.ModelDefaults))
+	for k, v := range c.Thinking.ModelDefaults {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := strings.ToLower(strings.TrimSpace(v))
+		if key == "" {
+			continue
+		}
+		if val == "" || val == "inherit" {
+			continue // 显式不覆盖：等价于删除该键
+		}
+		if !upstream.IsEffortLevel(val) {
+			return fmt.Errorf("thinking.model_defaults[%q]: %q 不是合法档位（max/xhigh/high/medium/low/minimal/off，或 inherit 表示不覆盖）", k, v)
+		}
+		out[key] = val
+	}
+	c.Thinking.ModelDefaults = out
+	return nil
+}
+
 func (c *Config) normalizePrompt() error {
 	switch m := strings.ToLower(strings.TrimSpace(c.Prompt.Mode)); m {
 	case "", "passthrough":
